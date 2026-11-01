@@ -1,4 +1,8 @@
 using System.Diagnostics;
+using System.IO;
+using System.Security;
+using System.Security.Principal;
+using System.Text;
 using Microsoft.Win32;
 
 namespace PCEssentials.Core;
@@ -12,6 +16,8 @@ public static class Startup
     public static string ExePath => Environment.ProcessPath ?? "";
 
     /// Start-with-Windows points at an exe path; when the app has moved, an existing entry follows it.
+    /// An elevated start also rewrites the admin task, so a task made by an older version picks up
+    /// the current settings.
     public static void KeepPathCurrent(bool isAdmin)
     {
         try
@@ -42,13 +48,42 @@ public static class Startup
 
     public static bool AdminTaskEnabled => RunSchtasks($"/Query /TN \"{Name}\"") == 0;
 
-    /// Needs the app to be running elevated already.
+    /// Needs the app to be running elevated already. The task replaces the Run key, so the app
+    /// doesn't also start a second time without admin rights.
     public static bool SetAdminTask(bool enabled)
     {
-        var code = enabled
-            ? RunSchtasks($"/Create /TN \"{Name}\" /TR \"\\\"{ExePath}\\\"\" /SC ONLOGON /RL HIGHEST /F")
-            : RunSchtasks($"/Delete /TN \"{Name}\" /F");
-        return code == 0;
+        if (!enabled) return RunSchtasks($"/Delete /TN \"{Name}\" /F") == 0;
+        // Created from XML because plain /Create leaves Task Scheduler's defaults, which stop the
+        // app after 72 hours and keep it from starting on battery.
+        var xml = Path.Combine(Path.GetTempPath(), $"{Name}-task.xml");
+        try
+        {
+            File.WriteAllText(xml, TaskXml(), Encoding.Unicode);
+            if (RunSchtasks($"/Create /TN \"{Name}\" /XML \"{xml}\" /F") != 0) return false;
+        }
+        finally { try { File.Delete(xml); } catch { } }
+        SetRunKey(false);
+        return true;
+    }
+
+    private static string TaskXml()
+    {
+        var user = SecurityElement.Escape(WindowsIdentity.GetCurrent().Name);
+        return $"""
+            <?xml version="1.0" encoding="UTF-16"?>
+            <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+              <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger></Triggers>
+              <Principals><Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+              <Settings>
+                <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+                <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+                <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+                <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+                <Enabled>true</Enabled>
+              </Settings>
+              <Actions Context="Author"><Exec><Command>{SecurityElement.Escape(ExePath)}</Command></Exec></Actions>
+            </Task>
+            """;
     }
 
     private static int RunSchtasks(string args)

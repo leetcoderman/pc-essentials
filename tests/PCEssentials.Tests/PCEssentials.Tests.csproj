@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- The decision logic has no Win32 or WPF dependencies, so it is compiled in directly. That keeps the tests
+       fast and avoids building the app into its bin folder, which is locked while PC Essentials runs. -->
+  <ItemGroup>
+    <Compile Include="..\..\src\PCEssentials\Services\GameMode\GameDetector.cs" Link="GameMode\GameDetector.cs" />
+    <Compile Include="..\..\src\PCEssentials\Services\Screenshot\ShotGeometry.cs" Link="Screenshot\ShotGeometry.cs" />
+    <Compile Include="..\..\src\PCEssentials\Services\Screenshot\ShotModel.cs" Link="Screenshot\ShotModel.cs" />
+    <Compile Include="..\..\src\PCEssentials\Services\AudioSessionKeys.cs" Link="Audio\AudioSessionKeys.cs" />
+    <Compile Include="..\..\src\PCEssentials\Services\ShakeToFind\ShakeDetector.cs" Link="ShakeToFind\ShakeDetector.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,12 @@
+# Build output
+bin/
+obj/
+build/
+dist/
+*.user
+*.suo
+.vs/
+TestResults/
+
+# Local tool state
+.claude/

@@ -84,7 +84,7 @@ public partial class App : System.Windows.Application
         _settings = AppSettings.Load();
         Core.Startup.KeepPathCurrent(HardwareMonitor.IsAdmin);
         _monitor = new HardwareMonitor();
-        _agents = new AgentUsageService();
+        _agents = new AgentUsageService(_settings);
         _audio = new AudioService();
         _clipboard = new ClipboardHistory(_settings);
         Calendar = new CalendarService(_settings);

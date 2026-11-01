@@ -75,11 +75,13 @@ public sealed record AgentSummary
 
 public sealed record AgentFinished(AgentProvider Provider, string Project, TimeSpan Duration);
 
-/// Reads Claude Code and Codex session logs from the home folder. Everything is local: no
-/// credentials are read and nothing is sent anywhere. Plan limits come from the caches the CLIs
-/// write themselves (~/.claude.json and the Codex rate-limit events in its logs).
+/// Reads Claude Code and Codex session logs from the home folder, plus any extra log folders in
+/// the settings (logs synced from another computer). Everything is local: no credentials are read
+/// and nothing is sent anywhere. Plan limits come from the caches the CLIs write themselves
+/// (~/.claude.json and the Codex rate-limit events in its logs).
 public sealed class AgentUsageService : IDisposable
 {
+    private readonly AppSettings _settings;
     private static readonly string ClaudeDir = Path.Combine(Paths.Home, ".claude");
     private static readonly string CodexDir = Path.Combine(Paths.Home, ".codex");
     /// History is kept for good: the Spending card shows everything ever recorded on this PC.
@@ -131,6 +133,8 @@ public sealed class AgentUsageService : IDisposable
         public DateTime LastEvent { get; set; }
         public bool HasUsageRecords { get; set; }
         public string Originator { get; set; } = "";
+        /// Read from an extra log folder: another computer's session, never live on this one.
+        public bool Remote { get; set; }
     }
 
     public sealed class CodexLimitState
@@ -151,8 +155,9 @@ public sealed class AgentUsageService : IDisposable
         public CodexLimitState? CodexLimits { get; set; }
     }
 
-    public AgentUsageService()
+    public AgentUsageService(AppSettings settings)
     {
+        _settings = settings;
         Seats = new ClaudeSeatService(_prices);
         Seats.Changed += () => ThreadPool.QueueUserWorkItem(_ => { lock (_stateGate) Publish(); });
         _scanTimer = new Timer(_ => Scan(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30));
@@ -179,6 +184,11 @@ public sealed class AgentUsageService : IDisposable
                 foreach (var file in Files(dir, cutoff)) Tail(file, line => ParseClaude(file, line, seat));
             foreach (var dir in new[] { Path.Combine(CodexDir, "sessions"), Path.Combine(CodexDir, "archived_sessions") })
                 foreach (var file in Files(dir, cutoff)) Tail(file, line => ParseCodex(file, line));
+            // Synced logs count toward the usual Claude account, which is assumed to be the one used elsewhere too.
+            foreach (var dir in ExtraLogDirs())
+                foreach (var file in Files(dir, cutoff))
+                    if (AgentLogPaths.IsCodexLog(file)) Tail(file, line => ParseCodex(file, line, remote: true));
+                    else Tail(file, line => ParseClaude(file, line, "default"));
             lock (_gate)
             {
                 foreach (var key in _records.Where(kv => kv.Value.Time < cutoff).Select(kv => kv.Key).ToList())
@@ -264,6 +274,14 @@ public sealed class AgentUsageService : IDisposable
         try { seats = Directory.GetDirectories(Paths.Home, ClaudeSeatService.Prefix + "*"); }
         catch (IOException) { yield break; }
         foreach (var dir in seats) yield return (Path.GetFileName(dir), Path.Combine(dir, "projects"));
+    }
+
+    private IEnumerable<string> ExtraLogDirs()
+    {
+        List<string> dirs;
+        try { dirs = _settings.Agents.ExtraLogFolders.ToList(); }
+        catch (InvalidOperationException) { return []; }
+        return dirs.Where(d => !string.IsNullOrWhiteSpace(d)).Select(d => Environment.ExpandEnvironmentVariables(d.Trim()));
     }
 
     private static IEnumerable<(string Seat, string Dir)> ClaudeSessionDirs() =>
@@ -378,7 +396,7 @@ public sealed class AgentUsageService : IDisposable
         Add(key, rec);
     }
 
-    private void ParseCodex(string file, ReadOnlyMemory<byte> line)
+    private void ParseCodex(string file, ReadOnlyMemory<byte> line, bool remote = false)
     {
         // Codex logs are dominated by huge response_item lines; decide from the first bytes whether
         // a line can matter before parsing anything.
@@ -390,7 +408,7 @@ public sealed class AgentUsageService : IDisposable
         }
         else if (!Has(head, "\"session_meta\""u8) && !Has(head, "\"turn_context\""u8) && !Has(head, "\"token_usage_record\""u8))
             return;
-        if (!_codexFiles.TryGetValue(file, out var st)) _codexFiles[file] = st = new CodexFileState { Session = Path.GetFileNameWithoutExtension(file) };
+        if (!_codexFiles.TryGetValue(file, out var st)) _codexFiles[file] = st = new CodexFileState { Session = Path.GetFileNameWithoutExtension(file), Remote = remote };
         using var doc = JsonDocument.Parse(line);
         var root = doc.RootElement;
         var type = Str(root, "type");
@@ -426,7 +444,7 @@ public sealed class AgentUsageService : IDisposable
                 {
                     case "task_started": st.TurnStarted = time; break;
                     case "task_complete" or "turn_aborted":
-                        if (st.TurnStarted is { } started && type is not null && Str(p, "type") == "task_complete")
+                        if (st.TurnStarted is { } started && !st.Remote && Str(p, "type") == "task_complete")
                             MaybeFinished(AgentProvider.Codex, st.Project, time - started, time);
                         st.TurnStarted = null;
                         break;
@@ -616,7 +634,7 @@ public sealed class AgentUsageService : IDisposable
         foreach (var s in _claudeSessions.Values.Where(s => s.Status == "busy"))
             live.Add(new LiveSession(AgentProvider.Claude, s.Project, s.Since, s.Place, s.Seat));
         foreach (var st in _codexFiles.Values)
-            if (st.TurnStarted is { } started && now - st.LastEvent < TimeSpan.FromMinutes(10))
+            if (st.TurnStarted is { } started && !st.Remote && now - st.LastEvent < TimeSpan.FromMinutes(10))
                 live.Add(new LiveSession(AgentProvider.Codex, st.Project, started,
                     st.Originator.Contains("desktop", StringComparison.OrdinalIgnoreCase) ? "app" : "terminal"));
 
@@ -770,13 +788,7 @@ public sealed class AgentUsageService : IDisposable
 
     private static string Capitalize(string? s) => string.IsNullOrEmpty(s) ? "" : char.ToUpperInvariant(s[0]) + s[1..];
 
-    private static string ProjectName(string? cwd)
-    {
-        if (string.IsNullOrEmpty(cwd)) return "";
-        var marker = cwd.IndexOf(Path.DirectorySeparatorChar + ".claude" + Path.DirectorySeparatorChar + "worktrees", StringComparison.OrdinalIgnoreCase);
-        if (marker > 0) cwd = cwd[..marker];
-        return Path.GetFileName(cwd.TrimEnd('\\', '/'));
-    }
+    private static string ProjectName(string? cwd) => AgentLogPaths.ProjectName(cwd);
 
     private static string? Str(JsonElement e, string name) =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

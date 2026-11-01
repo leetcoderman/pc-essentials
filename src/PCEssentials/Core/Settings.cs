@@ -156,8 +156,17 @@ public sealed class MouseSettings
     public string ShakeSensitivity { get; set; } = "normal";
 }
 
+public sealed class AgentSettings
+{
+    /// More folders of Claude Code and Codex logs to count, such as ones synced from another computer.
+    /// Each is searched with its subfolders; Codex logs are told apart by their "rollout-" file names.
+    /// A folder that does not exist is skipped.
+    public List<string> ExtraLogFolders { get; set; } = [Path.Combine(Paths.Home, "AgentLogs")];
+}
+
 public sealed class AppSettings
 {
+    public AgentSettings Agents { get; set; } = new();
     public ScreenshotSettings Screenshot { get; set; } = new();
     public TaskbarWidgetSettings TaskbarWidget { get; set; } = new();
     public IslandSettings Island { get; set; } = new();

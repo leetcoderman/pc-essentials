@@ -16,12 +16,14 @@
     <Compile Include="..\..\src\PCEssentials\Services\AudioSessionKeys.cs" Link="Audio\AudioSessionKeys.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\ShakeToFind\ShakeDetector.cs" Link="ShakeToFind\ShakeDetector.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Agents\AgentLogPaths.cs" Link="Agents\AgentLogPaths.cs" />
+    <Compile Include="..\..\src\PCEssentials\Services\Agents\AgentLogReader.cs" Link="Agents\AgentLogReader.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
 
 </Project>

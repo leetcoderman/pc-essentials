@@ -113,15 +113,12 @@ public sealed class AgentUsageService : IDisposable
     private int _scanning;
     private bool _dirty, _cacheLoaded;
     private DateTime _lastCacheWrite = DateTime.MinValue;
-    private byte[] _buffer = new byte[1 << 20];
+    private readonly AgentLogReader _reader = new();
     private static readonly string CachePath = Path.Combine(Paths.DataDir, "agents-cache.json");
-    private const int MaxLineBytes = 48 << 20;
 
     public AgentSummary Summary { get; private set; } = new();
     public event Action<AgentSummary>? Updated;
     public event Action<AgentFinished>? Finished;
-
-    private delegate void LineHandler(ReadOnlyMemory<byte> line);
 
     public sealed class CodexFileState
     {
@@ -199,7 +196,7 @@ public sealed class AgentUsageService : IDisposable
             if (firstScan)
             {
                 // The first read of a large history leaves big buffers behind; hand them back.
-                _buffer = new byte[1 << 20];
+                _reader.Shrink();
                 System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
                 GC.Collect();
             }
@@ -293,62 +290,21 @@ public sealed class AgentUsageService : IDisposable
         if (!Directory.Exists(dir)) return [];
         try
         {
-            return Directory.EnumerateFiles(dir, "*.jsonl", SearchOption.AllDirectories)
-                .Where(f => File.GetLastWriteTime(f) >= cutoff)
+            return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
+                .Where(f => AgentLogReader.IsLog(f) && File.GetLastWriteTime(f) >= cutoff)
                 .OrderBy(File.GetLastWriteTime)
                 .ToList();
         }
         catch { return []; }
     }
 
-    /// Reads only the bytes appended since the last scan, line by line as raw UTF-8, without
-    /// turning lines into strings. A file that shrank is read again. A trailing line without its
-    /// newline is still being written and is left for the next scan.
-    private void Tail(string path, LineHandler onLine)
+    /// Reads only what was added to a log since the last scan (a compressed log, only once).
+    private void Tail(string path, Action<ReadOnlyMemory<byte>> onLine)
     {
         try
         {
-            var length = new FileInfo(path).Length;
             _cursors.TryGetValue(path, out var offset);
-            if (length < offset) offset = 0;
-            if (length == offset) return;
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
-            fs.Seek(offset, SeekOrigin.Begin);
-            var filled = 0;
-            var skipping = false;
-            var consumed = offset;
-            while (true)
-            {
-                if (filled == _buffer.Length)
-                {
-                    if (_buffer.Length >= MaxLineBytes)
-                    {
-                        // A line larger than any we care about: drop what we have and skip to its end.
-                        consumed += filled;
-                        filled = 0;
-                        skipping = true;
-                    }
-                    else Array.Resize(ref _buffer, _buffer.Length * 2);
-                }
-                var read = fs.Read(_buffer, filled, _buffer.Length - filled);
-                if (read == 0) break;
-                filled += read;
-                var start = 0;
-                while (true)
-                {
-                    var nl = Array.IndexOf(_buffer, (byte)'\n', start, filled - start);
-                    if (nl < 0) break;
-                    if (!skipping && nl > start) onLine(new ReadOnlyMemory<byte>(_buffer, start, nl - start));
-                    skipping = false;
-                    consumed += nl - start + 1;
-                    start = nl + 1;
-                }
-                if (start > 0)
-                {
-                    Buffer.BlockCopy(_buffer, start, _buffer, 0, filled - start);
-                    filled -= start;
-                }
-            }
+            var consumed = _reader.Read(path, offset, onLine);
             if (consumed != offset) _dirty = true;
             _cursors[path] = consumed;
         }
@@ -408,7 +364,7 @@ public sealed class AgentUsageService : IDisposable
         }
         else if (!Has(head, "\"session_meta\""u8) && !Has(head, "\"turn_context\""u8) && !Has(head, "\"token_usage_record\""u8))
             return;
-        if (!_codexFiles.TryGetValue(file, out var st)) _codexFiles[file] = st = new CodexFileState { Session = Path.GetFileNameWithoutExtension(file), Remote = remote };
+        if (!_codexFiles.TryGetValue(file, out var st)) _codexFiles[file] = st = new CodexFileState { Session = Path.GetFileName(file).Split('.')[0], Remote = remote };
         using var doc = JsonDocument.Parse(line);
         var root = doc.RootElement;
         var type = Str(root, "type");

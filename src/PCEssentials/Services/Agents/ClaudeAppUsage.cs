@@ -35,6 +35,17 @@ public static class ClaudeAppUsage
         return candidates.Where(File.Exists).OrderByDescending(File.GetLastWriteTime).FirstOrDefault();
     }
 
+    /// The account the app is signed in to (its config.json sits beside the readings), or null.
+    public static string? Account()
+    {
+        try
+        {
+            var path = HistoryPath() is { } history ? Path.Combine(Path.GetDirectoryName(history)!, "config.json") : null;
+            return path is not null && File.Exists(path) ? ClaudeAccounts.AppAccount(File.ReadAllText(path)) : null;
+        }
+        catch (IOException) { return null; }
+    }
+
     public static List<Sample>? Read()
     {
         var path = HistoryPath();
@@ -71,11 +82,13 @@ public static class ClaudeAppUsage
     /// The latest reading as limit windows, when it is fresh. The file has percentages only: the
     /// session renews five hours after its first request, which the readings bracket and Claude
     /// Code's own first request inside that bracket pins down. A week's renewal is not known.
-    public static (LimitWindow? Session, LimitWindow? Weekly, DateTime At)? Limits(string? org, IEnumerable<DateTime> claudeRequests)
+    /// The readings name only the organization, which a Team's seats share, so those from before the
+    /// app last changed account (since) are left out.
+    public static (LimitWindow? Session, LimitWindow? Weekly, DateTime At)? Limits(string? org, IEnumerable<DateTime> claudeRequests, DateTime since)
     {
         var all = Read();
         if (all is null) return null;
-        var history = all.Where(s => org is null || s.Org is null || s.Org == org).ToList();
+        var history = all.Where(s => s.Time >= since && (org is null || s.Org is null || s.Org == org)).ToList();
         if (history.Count == 0) return null;
         var latest = history[^1];
         var now = DateTime.Now;

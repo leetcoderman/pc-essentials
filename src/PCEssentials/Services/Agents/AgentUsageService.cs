@@ -37,7 +37,8 @@ public sealed record LiveSession(AgentProvider Provider, string Project, DateTim
 
 /// One Claude account as the agents page shows it.
 public sealed record SeatSummary(string Id, string? Email, string? OrgName, string? PlanName, bool IsDefault, bool SignedIn,
-    LimitWindow? Session, LimitWindow? Weekly, double SessionCost, double MonthCost, string? Error, string ConfigDir);
+    LimitWindow? Session, LimitWindow? Weekly, double SessionCost, double MonthCost, string? Error, string ConfigDir,
+    string? SameAccountAs = null);
 
 public sealed record PeriodTotal(long Tokens, double Cost, int Requests, int Unpriced);
 
@@ -97,14 +98,27 @@ public sealed class AgentUsageService : IDisposable
     private CodexLimitState? _codexLimits;
     private readonly Timer _scanTimer, _liveTimer, _appWindowTimer;
     private ClaudeAppWindow.Reading? _appWindow;
+    /// The account the Claude app is signed in to, and since when (unknown before PC Essentials started).
+    private string? _appAccount;
+    private DateTime _appAccountSince = DateTime.MinValue;
 
-    /// The Claude app's on-screen usage, read once a minute; republished only when it changes.
+    /// The Claude app's account and on-screen usage, read once a minute; republished only when either changes.
     private void ReadAppWindow()
     {
-        var reading = ClaudeAppWindow.Read();
-        if (reading is null) return;
-        var changed = _appWindow is null || _appWindow.Session != reading.Session || _appWindow.Weekly != reading.Weekly;
-        _appWindow = reading;
+        var account = ClaudeAppUsage.Account();
+        var changed = account != _appAccount;
+        if (changed)
+        {
+            // What was read for the last account is not this one's.
+            if (_appAccount is not null) _appAccountSince = DateTime.Now;
+            _appAccount = account;
+            _appWindow = null;
+        }
+        if (ClaudeAppWindow.Read() is { } reading)
+        {
+            changed |= _appWindow is null || _appWindow.Session != reading.Session || _appWindow.Weekly != reading.Weekly;
+            _appWindow = reading;
+        }
         if (changed) lock (_stateGate) Publish();
     }
     private readonly object _gate = new();
@@ -604,28 +618,32 @@ public sealed class AgentUsageService : IDisposable
         double WindowCost(IEnumerable<AgentRecord> rs, LimitWindow? w, TimeSpan length) =>
             w?.ResetsAt is { } reset ? rs.Where(r => r.Time >= reset - length).Sum(r => r.Cost ?? 0) : 0;
         var seats = new List<SeatSummary>();
-        foreach (var seat in Seats.Seats)
+        var seatList = Seats.Seats;
+        var sameAs = ClaudeAccounts.Duplicates(seatList.Select(s => (s.Id, s.AccountId)));
+        foreach (var seat in seatList)
         {
             var mine = records.Where(r => r.Provider == AgentProvider.Claude && r.Seat == seat.Id).ToList();
             var session = Expire(seat.Session);
             var weeklyWindow = Expire(seat.Weekly);
-            // For the account the Claude app uses, what the app shows wins. On Windows, Claude Code's own
-            // usage check can report a separate session window for the same account. Best is the app's
+            // For the account the Claude app is signed in to, what the app shows wins. On Windows, Claude Code's
+            // own usage check can report a separate session window for the same account. Best is the app's
             // on-screen usage indicator (exact percent and reset), then its saved readings (15 minutes
-            // apart, reset estimated).
-            if (seat.IsDefault && _appWindow is { } shown && now - shown.At < TimeSpan.FromMinutes(3))
+            // apart, reset estimated). The app can be on any account, this PC's profiles or none of them.
+            var appsAccount = ClaudeAccounts.SameAccount(seat.AccountId, _appAccount);
+            if (appsAccount && _appWindow is { } shown && now - shown.At < TimeSpan.FromMinutes(3))
             {
                 session = shown.Session ?? session;
                 weeklyWindow = shown.Weekly ?? weeklyWindow;
             }
-            else if (seat.IsDefault && ClaudeAppUsage.Limits(seat.OrgId, mine.Where(r => r.Time > now.AddHours(-11)).Select(r => r.Time)) is { } app)
+            else if (appsAccount && ClaudeAppUsage.Limits(seat.OrgId, mine.Where(r => r.Time > now.AddHours(-11)).Select(r => r.Time), _appAccountSince) is { } app)
             {
                 session = app.Session ?? session;
                 weeklyWindow = app.Weekly is { } aw ? (weeklyWindow is { ResetsAt: { } wr } && weeklyWindow.UsedPercent <= aw.UsedPercent ? aw with { ResetsAt = wr } : aw) : weeklyWindow;
             }
             seats.Add(new SeatSummary(seat.Id, seat.Email, seat.OrgName, seat.PlanName, seat.IsDefault, seat.SignedIn,
                 session, weeklyWindow, WindowCost(mine, session, TimeSpan.FromHours(5)),
-                mine.Where(r => r.Time >= monthStart).Sum(r => r.Cost ?? 0), seat.Error, seat.ConfigDir));
+                mine.Where(r => r.Time >= monthStart).Sum(r => r.Cost ?? 0), seat.Error, seat.ConfigDir,
+                sameAs.TryGetValue(seat.Id, out var first) ? seatList.First(s => s.Id == first).ConfigDir : null));
             if (seat.IsDefault && seat.SignedIn)
                 limits[AgentProvider.Claude] = new AgentLimits(seat.PlanName, seat.PlanMonthly, session, weeklyWindow);
         }

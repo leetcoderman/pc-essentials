@@ -17,6 +17,7 @@
     <Compile Include="..\..\src\PCEssentials\Services\ShakeToFind\ShakeDetector.cs" Link="ShakeToFind\ShakeDetector.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Agents\AgentLogPaths.cs" Link="Agents\AgentLogPaths.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Agents\AgentLogReader.cs" Link="Agents\AgentLogReader.cs" />
+    <Compile Include="..\..\src\PCEssentials\Services\Agents\ClaudeAccounts.cs" Link="Agents\ClaudeAccounts.cs" />
     <Compile Include="..\..\src\PCEssentials\Core\HotkeyMatcher.cs" Link="Core\HotkeyMatcher.cs" />
   </ItemGroup>
 

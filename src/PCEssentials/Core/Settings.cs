@@ -162,6 +162,8 @@ public sealed class AgentSettings
     /// Each is searched with its subfolders; Codex logs are told apart by their "rollout-" file names.
     /// A folder that does not exist is skipped.
     public List<string> ExtraLogFolders { get; set; } = [Path.Combine(Paths.Home, "AgentLogs")];
+    /// The Claude seats' order on the agents page, by email; seats not listed follow in their usual order.
+    public List<string> SeatOrder { get; set; } = [];
 }
 
 public sealed class AppSettings

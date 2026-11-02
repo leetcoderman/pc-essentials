@@ -170,8 +170,8 @@ public sealed class AgentsPage : IslandPage
         add.Padding = new Thickness(10, 0, 10, 0);
         stack.Children.Add(Ui.Columns((head, Ui.Star), (add, Ui.Auto)));
 
-        // One column per account, divided by hairlines.
-        var shown = seats.Take(4).ToList();
+        // One column per account, divided by hairlines, in the order the person set.
+        var shown = ClaudeAccounts.Ordered(seats, x => x.Email, Ctx.Settings.Agents.SeatOrder).Take(4).ToList();
         if (shown.Count > 0)
         {
             var grid = new Grid();
@@ -186,6 +186,7 @@ public sealed class AgentsPage : IslandPage
                 }
                 grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 var col = SeatColumn(shown[i], shown.Count);
+                if (shown[i].Email is { } email && shown.Count > 1) AddMoveMenu(col, email, i, shown);
                 Grid.SetColumn(col, grid.ColumnDefinitions.Count - 1);
                 grid.Children.Add(col);
             }
@@ -199,6 +200,33 @@ public sealed class AgentsPage : IslandPage
             (new Border { Width = 1, Background = Ui.White(0.12), Margin = new Thickness(12, 0, 12, 0) }, Ui.Auto),
             (Place("IN TERMINAL", Ui.Text(">_", 11, FontWeights.Bold, 0.6, null, true), live.Where(l => l.Place == "terminal").ToList(), s), Ui.Star)));
         return Card(stack, 18);
+    }
+
+    /// Right-click a seat to move it a place left or right; the order is saved by email.
+    private void AddMoveMenu(FrameworkElement col, string email, int index, List<SeatSummary> shown)
+    {
+        // Hit-testable across the whole column, not just its text.
+        if (col is Panel { Background: null } panel) panel.Background = Brushes.Transparent;
+        col.MouseRightButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            var emails = shown.Select(x => x.Email).OfType<string>().ToList();
+            var menu = new ContextMenu();
+            void Item(string header, int by, bool enabled)
+            {
+                var item = new MenuItem { Header = header, IsEnabled = enabled };
+                item.Click += (_, _) =>
+                {
+                    Ctx.Settings.Agents.SeatOrder = ClaudeAccounts.Move(emails, email, by);
+                    Ctx.Settings.Save();
+                    Render(Ctx.Agents.Summary);
+                };
+                menu.Items.Add(item);
+            }
+            Item("Move left", -1, index > 0);
+            Item("Move right", 1, index < shown.Count - 1);
+            menu.IsOpen = true;
+        };
     }
 
     private FrameworkElement SeatColumn(SeatSummary seat, int count)
@@ -238,6 +266,14 @@ public sealed class AgentsPage : IslandPage
             e.ToolTip = err;
             e.Margin = new Thickness(0, 6, 0, 0);
             stack.Children.Add(e);
+        }
+        if (seat.SameAccountAs is { } other)
+        {
+            var d = Ui.Text("⚠ same account as another seat", 10.5, null, 0.9, Ui.Orange);
+            d.ToolTip = $"{System.IO.Path.GetFileName(other)} is already signed in to {seat.Email}, so both show the same limits.\n" +
+                $"To use another account here, run /login in Claude Code with CLAUDE_CONFIG_DIR={seat.ConfigDir}.";
+            d.Margin = new Thickness(0, 6, 0, 0);
+            stack.Children.Add(d);
         }
         return stack;
     }

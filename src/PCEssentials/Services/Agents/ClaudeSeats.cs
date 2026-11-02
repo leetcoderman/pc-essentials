@@ -17,11 +17,16 @@ public sealed class ClaudeSeat
     public string? Email { get; set; }
     public string? OrgName { get; set; }
     public string? OrgId { get; set; }
+    /// The account's own id; Team seats share the organization's.
+    public string? AccountId { get; set; }
     public string? PlanName { get; set; }
     public double? PlanMonthly { get; set; }
     public LimitWindow? Session { get; set; }
     public LimitWindow? Weekly { get; set; }
+    /// When Anthropic gave the reading shown, which a turned-away check leaves where it was.
     public DateTime? CheckedAt { get; set; }
+    /// When the last check ran, whatever came of it; the next one is due five minutes later.
+    public DateTime? TriedAt { get; set; }
     public string? Error { get; set; }
     public bool SignedIn => Email is not null;
 }
@@ -68,7 +73,7 @@ public sealed class ClaudeSeatService : IDisposable
         {
             Discover();
             var force = _forceAfter;
-            var due = Seats.Where(s => s.SignedIn && (s.CheckedAt is null || DateTime.Now - s.CheckedAt > CheckEvery || s.CheckedAt < force)).ToList();
+            var due = Seats.Where(s => s.SignedIn && (s.TriedAt is null || DateTime.Now - s.TriedAt > CheckEvery || s.TriedAt < force)).ToList();
             _forceAfter = DateTime.MaxValue;
             foreach (var seat in due)
             {
@@ -124,6 +129,7 @@ public sealed class ClaudeSeatService : IDisposable
                 seat.Email = Str(acct, "emailAddress");
                 seat.OrgName = Str(acct, "organizationName");
                 seat.OrgId = Str(acct, "organizationUuid");
+                seat.AccountId = Str(acct, "accountUuid");
                 // A Team or Enterprise organization names the plan, whatever the seat's own tier says.
                 var orgType = Str(acct, "organizationType") ?? "";
                 var plan = (orgType.Contains("team") || orgType.Contains("enterprise") ? _prices.Plan(AgentProvider.Claude, orgType) : null)
@@ -133,33 +139,49 @@ public sealed class ClaudeSeatService : IDisposable
                 seat.PlanName = plan?.Name;
                 seat.PlanMonthly = plan?.Monthly;
             }
-            else seat.Email = null;
+            else { seat.Email = null; seat.AccountId = null; }
 
             // The saved copy only counts while it is newer than the last live reading.
-            if (root.TryGetProperty("cachedUsageUtilization", out var cache) && cache.TryGetProperty("utilization", out var u))
+            if (SavedUsage(root) is ({ } fetched, var u) && fetched > (seat.CheckedAt ?? DateTime.MinValue))
             {
-                var fetched = cache.TryGetProperty("fetchedAtMs", out var ms) && ms.ValueKind == JsonValueKind.Number
-                    ? DateTimeOffset.FromUnixTimeMilliseconds(ms.GetInt64()).LocalDateTime : DateTime.MinValue;
-                if (seat.CheckedAt is null || fetched > seat.CheckedAt)
-                {
-                    (seat.Session, seat.Weekly) = ParseLimits(u);
-                    seat.CheckedAt = seat.CheckedAt is null ? null : fetched;
-                }
+                (seat.Session, seat.Weekly) = ParseLimits(u);
+                seat.CheckedAt = fetched;
             }
         }
         catch (IOException) { }
         catch (Exception ex) { Log.Error("claude seat profile", ex); }
     }
 
+    /// The usage copy Claude Code saves in a profile each time it reaches Anthropic, and when.
+    private static (DateTime? At, JsonElement Utilization) SavedUsage(JsonElement root)
+    {
+        if (!root.TryGetProperty("cachedUsageUtilization", out var cache) || !cache.TryGetProperty("utilization", out var u)) return (null, default);
+        var at = cache.TryGetProperty("fetchedAtMs", out var ms) && ms.ValueKind == JsonValueKind.Number
+            ? DateTimeOffset.FromUnixTimeMilliseconds(ms.GetInt64()).LocalDateTime : DateTime.MinValue;
+        return (at, u);
+    }
+
+    private static DateTime? SavedAt(string profilePath)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(profilePath));
+            return SavedUsage(doc.RootElement).At;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException) { return null; }
+    }
+
     /// Asks Claude Code itself for the seat's usage, the way the Mac app does: an initialize and a
     /// get_usage control request over stream-json, no model call, no tools, no MCP servers, no hooks.
     private void CheckLive(ClaudeSeat seat)
     {
+        var started = DateTime.Now;
+        // Stamped up front, so a failed check waits its turn like any other instead of running every tick.
+        seat.TriedAt = started;
         var exe = FindClaude();
         if (exe is null)
         {
             seat.Error = "Claude Code isn't installed, so limits come from its saved copy.";
-            seat.CheckedAt = DateTime.Now;
             return;
         }
         try
@@ -172,8 +194,11 @@ public sealed class ClaudeSeatService : IDisposable
                 CreateNoWindow = true, StandardOutputEncoding = Encoding.UTF8, WorkingDirectory = Path.GetTempPath(),
             };
             psi.Environment["DISABLE_AUTOUPDATER"] = "1";
-            psi.Environment.Remove("CLAUDECODE");
-            psi.Environment.Remove("CLAUDE_CODE_ENTRYPOINT");
+            // Started from a Claude session, PC Essentials inherits that session's sign-in and endpoint
+            // (CLAUDE_CODE_*, ANTHROPIC_*), which would answer for that account instead of the seat's.
+            foreach (var key in psi.Environment.Keys.Where(k => k.StartsWith("CLAUDE_CODE_", StringComparison.OrdinalIgnoreCase)
+                         || k.StartsWith("ANTHROPIC_", StringComparison.OrdinalIgnoreCase) || k.Equals("CLAUDECODE", StringComparison.OrdinalIgnoreCase)).ToList())
+                psi.Environment.Remove(key);
             if (seat.IsDefault) psi.Environment.Remove("CLAUDE_CONFIG_DIR");
             else psi.Environment["CLAUDE_CONFIG_DIR"] = seat.ConfigDir;
 
@@ -192,7 +217,8 @@ public sealed class ClaudeSeatService : IDisposable
                 if (read.Result is not { } line) break;
                 if (line.Contains("\"request_id\":\"usage\"")) { answer = line; break; }
             }
-            try { p.StandardInput.Close(); if (!p.HasExited) p.Kill(true); } catch { }
+            // Let it exit by itself first: it saves the fresh usage copy that tells a live answer from a stale one.
+            try { p.StandardInput.Close(); if (!p.WaitForExit(5000)) p.Kill(true); } catch { }
 
             if (answer is null) { seat.Error = "Claude Code didn't answer the usage check."; return; }
             using var doc = JsonDocument.Parse(answer);
@@ -202,21 +228,26 @@ public sealed class ClaudeSeatService : IDisposable
                 seat.Error = Str(r, "error") ?? "Claude Code couldn't read this seat's usage. Is it signed in?";
                 return;
             }
-            if (body.TryGetProperty("rate_limits", out var rl) && rl.ValueKind == JsonValueKind.Object)
+            if (!body.TryGetProperty("rate_limits", out var rl) || rl.ValueKind != JsonValueKind.Object) return;
+            (seat.Session, seat.Weekly) = ParseLimits(rl);
+            // A turned-away check answers with the saved copy, as old as it is: keep its own time, and say so.
+            var savedAt = SavedAt(seat.ProfilePath);
+            if (ClaudeAccounts.AnsweredLive(started, savedAt))
             {
-                (seat.Session, seat.Weekly) = ParseLimits(rl);
+                seat.CheckedAt = savedAt;
                 seat.Error = null;
             }
-            seat.CheckedAt = DateTime.Now;
+            else
+            {
+                seat.CheckedAt = savedAt ?? seat.CheckedAt;
+                seat.Error = "Anthropic turned this seat's usage check away (too many checks), so this is its last reading"
+                    + (savedAt is { } at && at > DateTime.MinValue ? $", from {at:HH:mm}." : ".");
+            }
         }
         catch (Exception ex)
         {
             seat.Error = "Couldn't run Claude Code for this seat.";
             Log.Error("claude seat check", ex);
-        }
-        finally
-        {
-            seat.CheckedAt ??= DateTime.Now;
         }
     }
 

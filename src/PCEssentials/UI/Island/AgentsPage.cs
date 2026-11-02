@@ -211,21 +211,17 @@ public sealed class AgentsPage : IslandPage
         {
             e.Handled = true;
             var emails = shown.Select(x => x.Email).OfType<string>().ToList();
-            var menu = new ContextMenu();
-            void Item(string header, int by, bool enabled)
+            void Move(int by)
             {
-                var item = new MenuItem { Header = header, IsEnabled = enabled };
-                item.Click += (_, _) =>
-                {
-                    Ctx.Settings.Agents.SeatOrder = ClaudeAccounts.Move(emails, email, by);
-                    Ctx.Settings.Save();
-                    Render(Ctx.Agents.Summary);
-                };
-                menu.Items.Add(item);
+                Ctx.Settings.Agents.SeatOrder = ClaudeAccounts.Move(emails, email, by);
+                Ctx.Settings.Save();
+                Render(Ctx.Agents.Summary);
             }
-            Item("Move left", -1, index > 0);
-            Item("Move right", 1, index < shown.Count - 1);
-            menu.IsOpen = true;
+            var items = new List<(string, bool, Action)>();
+            if (index > 0) items.Add(("Move left", false, () => Move(-1)));
+            if (index < shown.Count - 1) items.Add(("Move right", false, () => Move(1)));
+            // Drawn in the page: a ContextMenu's popup falls behind the always-on-top island.
+            Menus.Show(col, items);
         };
     }
 

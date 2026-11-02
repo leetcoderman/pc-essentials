@@ -24,10 +24,13 @@ public static class ClaudeAccounts
     public static bool SameAccount(string? seatAccount, string? appAccount) =>
         seatAccount is not null && appAccount is not null && string.Equals(seatAccount, appAccount, StringComparison.OrdinalIgnoreCase);
 
-    /// Claude Code refreshes the profile's saved usage copy whenever it reaches Anthropic. When the check
-    /// is turned away (a 429), get_usage answers with the saved copy instead, which then predates the check.
+    /// Claude Code refreshes the profile's saved usage copy whenever it reaches Anthropic, and answers from
+    /// that copy without asking while it is seconds old. When the check is turned away (a 429), it answers
+    /// with the saved copy too, however old: older than that, the answer is not current.
+    public static readonly TimeSpan SnapshotReuse = TimeSpan.FromMinutes(2);
+
     public static bool AnsweredLive(DateTime checkStarted, DateTime? savedAt) =>
-        savedAt is { } at && at >= checkStarted.AddSeconds(-2);
+        savedAt is { } at && at >= checkStarted - SnapshotReuse;
 
     /// Seats in the order the person set (by email), then the rest in the order they came.
     public static List<T> Ordered<T>(IEnumerable<T> seats, Func<T, string?> email, IList<string> order)

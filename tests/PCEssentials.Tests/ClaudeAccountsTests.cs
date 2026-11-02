@@ -40,6 +40,15 @@ public class ClaudeAccountsTests
         Assert.True(ClaudeAccounts.AnsweredLive(started, started.AddSeconds(-1)));
     }
 
+    // Claude Code answers from a snapshot seconds old without asking; that is still current.
+    [Fact]
+    public void RecentSnapshotCountsAsLive()
+    {
+        var started = new DateTime(2026, 11, 3, 0, 0, 25);
+        Assert.True(ClaudeAccounts.AnsweredLive(started, new DateTime(2026, 11, 3, 0, 0, 16)));
+        Assert.False(ClaudeAccounts.AnsweredLive(started, started.AddMinutes(-5)));
+    }
+
     // A 429 leaves the 23:06 copy in place, and get_usage hands it back as if it were new.
     [Fact]
     public void OlderSavedCopyMeansTurnedAway()

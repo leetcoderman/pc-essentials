@@ -30,9 +30,8 @@ public sealed class KeyboardHook : IDisposable
     private readonly HookProc _proc;
     private IntPtr _hook;
     private readonly Dispatcher _dispatcher;
-    private readonly Dictionary<(ModifierKeys, int), Action> _bindings = new();
+    private readonly List<(HotkeyModifiers Modifiers, int Vk, Action Action)> _bindings = new();
     private readonly HashSet<int> _swallowedDown = new();
-    private bool _lwin, _rwin, _lctrl, _rctrl, _lalt, _ralt, _lshift, _rshift;
     private bool _updateQueued;
     private Action<Hotkey>? _recorder;
     private Func<bool>? _blockWin;
@@ -45,7 +44,9 @@ public sealed class KeyboardHook : IDisposable
 
     public void Bind(Hotkey hotkey, Action action)
     {
-        _bindings[(hotkey.Modifiers, KeyInterop.VirtualKeyFromKey(hotkey.Key))] = action;
+        var vk = KeyInterop.VirtualKeyFromKey(hotkey.Key);
+        _bindings.RemoveAll(b => b.Modifiers == (HotkeyModifiers)hotkey.Modifiers && b.Vk == vk);
+        _bindings.Add(((HotkeyModifiers)hotkey.Modifiers, vk, action));
         QueueUpdate();
     }
 
@@ -84,9 +85,6 @@ public sealed class KeyboardHook : IDisposable
     private void Install()
     {
         _swallowedDown.Clear();
-        static bool Held(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
-        (_lwin, _rwin, _lctrl, _rctrl) = (Held(0x5B), Held(0x5C), Held(0xA2), Held(0xA3));
-        (_lalt, _ralt, _lshift, _rshift) = (Held(0xA4), Held(0xA5), Held(0xA0), Held(0xA1));
         using var module = Process.GetCurrentProcess().MainModule!;
         _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(module.ModuleName), 0);
         Log.Info(_hook == IntPtr.Zero ? $"keyboard hook failed: {Marshal.GetLastWin32Error()}" : "keyboard hook installed");
@@ -109,86 +107,70 @@ public sealed class KeyboardHook : IDisposable
 
     private static bool IsModifier(int vk) => vk is 0x5B or 0x5C or 0xA0 or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5 or 0x10 or 0x11 or 0x12;
 
-    private ModifierKeys CurrentModifiers()
-    {
-        var m = ModifierKeys.None;
-        if (_lwin || _rwin) m |= ModifierKeys.Windows;
-        if (_lctrl || _rctrl) m |= ModifierKeys.Control;
-        if (_lalt || _ralt) m |= ModifierKeys.Alt;
-        if (_lshift || _rshift) m |= ModifierKeys.Shift;
-        return m;
-    }
+    /// Live modifier state. Inside the hook GetAsyncKeyState shows the keyboard as it was before the current
+    /// event, which is exactly what a non-modifier key press needs. Presses this hook swallowed never reach
+    /// it, so a Win press blocked in game mode doesn't count as held.
+    private static HotkeyModifiers CurrentModifiers() => HotkeyMatcher.Held(vk => (GetAsyncKeyState(vk) & 0x8000) != 0);
 
     private IntPtr Callback(int code, IntPtr wParam, IntPtr lParam)
     {
         if (code < 0) return CallNextHookEx(_hook, code, wParam, lParam);
         var info = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+        // Keys sent by software (our own mask key included) always pass untouched.
+        if ((info.flags & LLKHF_INJECTED) != 0) return CallNextHookEx(_hook, code, wParam, lParam);
         var msg = wParam.ToInt32();
         var down = msg is WM_KEYDOWN or WM_SYSKEYDOWN;
         var up = msg is WM_KEYUP or WM_SYSKEYUP;
         var vk = (int)info.vkCode;
 
+        // Key-ups are swallowed only when the matching press was, so apps never see a lone release
+        // or miss one.
+        if (up) return _swallowedDown.Remove(vk) ? (IntPtr)1 : CallNextHookEx(_hook, code, wParam, lParam);
+        if (!down) return CallNextHookEx(_hook, code, wParam, lParam);
+
         // Game mode. A swallowed Win press never counts as a modifier, so Win+<key> reaches the game as
         // a plain key and none of our Win bindings fire. A Win key Windows already saw go down (held
         // before the game took focus) is left alone, so its release gets through and it can't stick.
-        // GetAsyncKeyState still shows the state from before this event, which also covers presses we
-        // never saw (made in an elevated window).
-        if (vk is 0x5B or 0x5C && (info.flags & LLKHF_INJECTED) == 0)
-        {
-            var held = (vk == 0x5B ? _lwin : _rwin) || (GetAsyncKeyState(vk) & 0x8000) != 0;
-            if (down && (_swallowedDown.Contains(vk) || (!held && _blockWin?.Invoke() == true)))
-            {
-                _swallowedDown.Add(vk);
-                return (IntPtr)1;
-            }
-            if (up && _swallowedDown.Remove(vk)) return (IntPtr)1;
-        }
-
-        if ((info.flags & LLKHF_INJECTED) == 0)
-        {
-            switch (vk)
-            {
-                case 0x5B: _lwin = down; break;
-                case 0x5C: _rwin = down; break;
-                case 0xA2: _lctrl = down; break;
-                case 0xA3: _rctrl = down; break;
-                case 0xA4: _lalt = down; break;
-                case 0xA5: _ralt = down; break;
-                case 0xA0: _lshift = down; break;
-                case 0xA1: _rshift = down; break;
-            }
-        }
-        else
-        {
-            return CallNextHookEx(_hook, code, wParam, lParam);
-        }
-
-        if (down && Recorder is { } recorder && !IsModifier(vk) && CurrentModifiers() != ModifierKeys.None)
+        if (vk is 0x5B or 0x5C && (GetAsyncKeyState(vk) & 0x8000) == 0 && _blockWin?.Invoke() == true)
         {
             _swallowedDown.Add(vk);
-            var combo = new Hotkey(CurrentModifiers(), KeyInterop.KeyFromVirtualKey(vk));
-            if (combo.Modifiers.HasFlag(ModifierKeys.Windows) || combo.Modifiers.HasFlag(ModifierKeys.Alt))
+            return (IntPtr)1;
+        }
+
+        var held = CurrentModifiers();
+        if (Recorder is { } recorder && !IsModifier(vk) && held != HotkeyModifiers.None)
+        {
+            _swallowedDown.Add(vk);
+            var combo = new Hotkey((ModifierKeys)held, KeyInterop.KeyFromVirtualKey(vk));
+            if (held.HasFlag(HotkeyModifiers.Windows) || held.HasFlag(HotkeyModifiers.Alt))
                 Native.SendKeyCombo(MaskKey);
             _dispatcher.BeginInvoke(() => recorder(combo));
             return (IntPtr)1;
         }
 
-        if (down && Recorder is null && _bindings.TryGetValue((CurrentModifiers(), vk), out var action))
+        if (Recorder is null)
         {
-            // Auto-repeat of a held key does not fire again.
-            if (_swallowedDown.Add(vk))
+            foreach (var binding in _bindings)
             {
-                var mods = CurrentModifiers();
-                if (mods.HasFlag(ModifierKeys.Windows) || mods.HasFlag(ModifierKeys.Alt))
-                    Native.SendKeyCombo(MaskKey);
-                _dispatcher.BeginInvoke(() =>
+                if (!HotkeyMatcher.Matches(binding.Modifiers, binding.Vk, held, vk)) continue;
+                // Auto-repeat of a held key does not fire again.
+                if (_swallowedDown.Add(vk))
                 {
-                    try { action(); } catch (Exception ex) { Log.Error("shortcut", ex); }
-                });
+                    if (held.HasFlag(HotkeyModifiers.Windows) || held.HasFlag(HotkeyModifiers.Alt))
+                        Native.SendKeyCombo(MaskKey);
+                    var action = binding.Action;
+                    _dispatcher.BeginInvoke(() =>
+                    {
+                        try { action(); } catch (Exception ex) { Log.Error("shortcut", ex); }
+                    });
+                }
+                return (IntPtr)1;
             }
-            return (IntPtr)1;
         }
-        if (up && _swallowedDown.Remove(vk)) return (IntPtr)1;
+
+        // This press reaches the app, so its release must too, even if an earlier press of the same key
+        // was swallowed and its release never arrived.
+        _swallowedDown.Remove(vk);
         return CallNextHookEx(_hook, code, wParam, lParam);
     }
 

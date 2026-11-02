@@ -9,25 +9,9 @@ public readonly record struct Hotkey(ModifierKeys Modifiers, Key Key)
     public static bool TryParse(string? text, out Hotkey hotkey)
     {
         hotkey = default;
-        if (string.IsNullOrWhiteSpace(text)) return false;
-        var mods = ModifierKeys.None;
-        Key? key = null;
-        foreach (var raw in text.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
-        {
-            switch (raw.ToLowerInvariant())
-            {
-                case "ctrl" or "control": mods |= ModifierKeys.Control; break;
-                case "alt": mods |= ModifierKeys.Alt; break;
-                case "shift": mods |= ModifierKeys.Shift; break;
-                case "win" or "windows": mods |= ModifierKeys.Windows; break;
-                default:
-                    if (Enum.TryParse<Key>(raw, true, out var k)) key = k;
-                    else return false;
-                    break;
-            }
-        }
-        if (key is null || mods == ModifierKeys.None) return false;
-        hotkey = new Hotkey(mods, key.Value);
+        if (!HotkeyMatcher.TryParse(text, out var mods, out var name)) return false;
+        if (mods == HotkeyModifiers.None || !Enum.TryParse<Key>(name, true, out var key)) return false;
+        hotkey = new Hotkey((ModifierKeys)mods, key);
         return true;
     }
 

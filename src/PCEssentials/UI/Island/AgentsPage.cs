@@ -251,7 +251,7 @@ public sealed class AgentsPage : IslandPage
             return stack;
         }
         stack.Children.Add(LimitRow(seat.Session, Ui.Clay, TimeSpan.FromHours(5), opacity, "Session"));
-        if (seat.Weekly is { UsedPercent: > 0 } weekly) stack.Children.Add(LimitRow(weekly, Ui.Clay, TimeSpan.FromDays(7), opacity, "Weekly"));
+        if (seat.Weekly is { } weekly) stack.Children.Add(LimitRow(weekly, Ui.Clay, TimeSpan.FromDays(7), opacity, "Weekly"));
         stack.Children.Add(MoneyLine("This session", seat.SessionCost, opacity));
         var month = MoneyLine("This month", seat.MonthCost, opacity);
         month.Margin = new Thickness(0, 6, 0, 0);

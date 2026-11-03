@@ -121,9 +121,9 @@ public static class AgentResting
 
     /// The capsule's resting row (NotchAgentRestingRow): a 16 pt ring with the agent's mark, then the
     /// number and the time it renews on one line. One per side puts two of these side by side.
-    public static FrameworkElement? Row(AgentSummary s, IslandSettings cfg, out string key)
+    public static FrameworkElement? Row(AgentSummary s, IslandSettings cfg, IList<string> seatOrder, out string key)
     {
-        if (cfg.AgentsRestingLayout == "all") return AllRow(s, cfg, out key);
+        if (cfg.AgentsRestingLayout == "all") return AllRow(s, cfg, seatOrder, out key);
         var used = cfg.AgentsLimitDisplay == "used";
         var meters = Sequence(s, cfg);
         if (meters.Count == 0)
@@ -157,22 +157,22 @@ public static class AgentResting
         return One(m, used);
     }
 
-    /// Every signed-in account side by side: each Claude seat, then Codex. An account shows its window
-    /// closest to running out: a ring in the agent's colour filled to the used share (yellow from 80%,
-    /// red from 95%), the percent used, and under it when that window renews. Team seats other than
-    /// the main one carry their name, so two Claude rings can be told apart.
-    private static FrameworkElement? AllRow(AgentSummary s, IslandSettings cfg, out string key)
+    /// Every signed-in account side by side: each Claude seat in the agents card's order, then Codex.
+    /// An account shows its window closest to running out: a ring in the agent's colour filled to the
+    /// used share (yellow from 80%, red from 95%), the percent used, and under it its name and when that
+    /// window renews, so the Claude rings can be told apart.
+    private static FrameworkElement? AllRow(AgentSummary s, IslandSettings cfg, IList<string> seatOrder, out string key)
     {
         var items = new List<(RestingMeter Meter, string? Name, string Tip)>();
-        foreach (var seat in s.Seats.Where(x => x.SignedIn && !cfg.AgentsRestingHidden.Contains("Claude")))
+        var seats = cfg.AgentsRestingHidden.Contains("Claude") ? [] : ClaudeAccounts.Ordered(s.Seats.Where(x => x.SignedIn), x => x.Email, seatOrder);
+        foreach (var seat in seats)
         {
             if (Tightest(seat.Session, seat.Weekly) is not { } pick) continue;
-            var name = seat.IsDefault ? null : seat.Email?.Split('@')[0];
-            items.Add((new RestingMeter(AgentProvider.Claude, pick.Window, pick.Weekly), name, Tip("Claude", seat.Email, seat.Session, seat.Weekly)));
+            items.Add((new RestingMeter(AgentProvider.Claude, pick.Window, pick.Weekly), seat.Email?.Split('@')[0], Tip("Claude", seat.Email, seat.Session, seat.Weekly)));
         }
         if (!cfg.AgentsRestingHidden.Contains("Codex") && s.Limits.TryGetValue(AgentProvider.Codex, out var codex)
             && Tightest(codex.Session, codex.Weekly) is { } cp)
-            items.Add((new RestingMeter(AgentProvider.Codex, cp.Window, cp.Weekly), null, Tip("Codex", codex.PlanName, codex.Session, codex.Weekly)));
+            items.Add((new RestingMeter(AgentProvider.Codex, cp.Window, cp.Weekly), "codex", Tip("Codex", codex.PlanName, codex.Session, codex.Weekly)));
         if (items.Count == 0)
         {
             key = "none";

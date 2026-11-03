@@ -705,7 +705,7 @@ public sealed class IslandWindow : Window
             _capRight.Child = Ui.Text(_ctx.KeepAwake.RemainingShort, 12.5, FontWeights.SemiBold, 1, Ui.Yellow, true);
             width = 170;
         }
-        else if (s.IdleContent == "agents" && AgentResting.Row(_ctx.Agents.Summary, s, out var key) is { } rest)
+        else if (s.IdleContent == "agents" && AgentResting.Row(_ctx.Agents.Summary, s, _ctx.Settings.Agents.SeatOrder, out var key) is { } rest)
         {
             // The resting AI limits. Rebuilt only when what they show changes, so Rotate fades between agents.
             if (key != _restKey || _capLeft.Child is not FrameworkElement { Tag: "rest" })

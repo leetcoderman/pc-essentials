@@ -156,6 +156,23 @@ public sealed class MouseSettings
     public string ShakeSensitivity { get; set; } = "normal";
 }
 
+public sealed class LauncherSettings
+{
+    /// A Spotlight-style search box: apps, files, open windows, settings, a calculator and web search.
+    public bool Enabled { get; set; } = true;
+    /// Alt+Space is PowerToys Run's default and sits where Cmd+Space is on a Mac keyboard. It replaces the
+    /// window menu that Alt+Space normally opens.
+    public string Hotkey { get; set; } = "Alt+Space";
+    /// Files and folders from the Windows Search index.
+    public bool SearchFiles { get; set; } = true;
+    public bool SearchWindows { get; set; } = true;
+    /// google, bing, duckduckgo or a URL with {q} in it.
+    public string SearchEngine { get; set; } = "google";
+    public int MaxResults { get; set; } = 8;
+    /// Times each result was opened, by id, so frequent picks rise to the top.
+    public Dictionary<string, int> Usage { get; set; } = new();
+}
+
 public sealed class AgentSettings
 {
     /// More folders of Claude Code and Codex logs to count, such as ones synced from another computer.
@@ -176,6 +193,7 @@ public sealed class AppSettings
     public ClipboardSettings Clipboard { get; set; } = new();
     public GameModeSettings GameMode { get; set; } = new();
     public MouseSettings Mouse { get; set; } = new();
+    public LauncherSettings Launcher { get; set; } = new();
     public bool StartWithWindows { get; set; }
     public bool UseFahrenheit { get; set; }
 

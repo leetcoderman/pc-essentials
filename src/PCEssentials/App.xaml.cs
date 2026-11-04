@@ -4,10 +4,12 @@ using PCEssentials.Core;
 using PCEssentials.Services;
 using PCEssentials.Services.Agents;
 using PCEssentials.Services.GameMode;
+using PCEssentials.Services.Launcher;
 using PCEssentials.Services.Screenshot;
 using PCEssentials.Services.ShakeToFind;
 using PCEssentials.UI;
 using PCEssentials.UI.Island;
+using PCEssentials.UI.Launcher;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
 
@@ -29,16 +31,21 @@ public partial class App : System.Windows.Application
     private SettingsWindow? _settingsWindow;
     private ScreenshotService? _shots;
     private ShakeToFindService? _shake;
+    private LauncherService? _launcher;
+    private LauncherWindow? _launcherWindow;
     private string? _balloonPath;
 
     /// Lets an update script ask this copy to quit (it may run elevated, out of the script's reach):
-    /// creating %APPDATA%\PCEssentials\quit.request quits within a second.
-    private static readonly string QuitRequest = System.IO.Path.Combine(Paths.DataDir, "quit.request");
+    /// creating quit.request in %APPDATA%\PCEssentials or next to the exe quits within a second. The exe
+    /// folder matters for tools running inside a packaged (MSIX) app such as the Claude desktop app: Windows
+    /// redirects their %APPDATA% writes into the package's own copy, which this app never sees.
+    private static readonly string[] QuitRequests =
+        [System.IO.Path.Combine(Paths.DataDir, "quit.request"), System.IO.Path.Combine(AppContext.BaseDirectory, "quit.request")];
 
     /// Watches for request files from scripts: quit.request and island.request.
     private void StartRequestWatch()
     {
-        try { System.IO.File.Delete(QuitRequest); } catch { }
+        foreach (var file in QuitRequests) try { System.IO.File.Delete(file); } catch { }
         var quitWatch = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         quitWatch.Tick += (_, _) =>
         {
@@ -54,8 +61,9 @@ public partial class App : System.Windows.Application
                 if (parts.Length > 1 && double.TryParse(parts[1], out var offset))
                     Dispatcher.BeginInvoke(() => _island.ScrollPage(offset), DispatcherPriority.Background);
             }
-            if (!System.IO.File.Exists(QuitRequest)) return;
-            try { System.IO.File.Delete(QuitRequest); } catch { }
+            var request = QuitRequests.FirstOrDefault(System.IO.File.Exists);
+            if (request is null) return;
+            try { System.IO.File.Delete(request); } catch { }
             Log.Info("quit requested");
             quitWatch.Stop();
             Quit();
@@ -115,6 +123,16 @@ public partial class App : System.Windows.Application
         };
         _island = new IslandWindow(ctx);
         if (_settings.Island.Enabled) _island.Show();
+        _launcher = new LauncherService(_settings,
+        [
+            new("PC Essentials Settings", "Open PC Essentials settings", Ui.GSettings, OpenSettings, "preferences", "options"),
+            new("Take a screenshot", "Select an area of the screen", Ui.GImage, TakeScreenshotSoon, "screenshot", "capture", "snip"),
+            new("Clipboard history", "Open the island's clipboard page", Ui.GClipboard, () => _island.Open("clipboard"), "clipboard"),
+            new("Scratchpad", "Open the island's notes", Ui.GNote, () => _island.Open("scratchpad"), "notes", "scratchpad"),
+            new("Keep awake", "Open the island's keep awake page", Ui.GCoffee, () => _island.Open("keepAwake"), "caffeine", "awake", "no sleep"),
+            new("Volume mixer", "Open the island's mixer", Ui.GMixer, () => _island.Open("mixer"), "volume", "mixer"),
+            new("AI agent limits", "Claude and Codex usage", Ui.GRobot, () => _island.Open("agents"), "claude", "codex", "agents", "limits"),
+        ]);
         StartRequestWatch();
         BindShortcuts();
 
@@ -137,6 +155,8 @@ public partial class App : System.Windows.Application
         }
         if (_settings.GameMode.Enabled && Hotkey.TryParse(_settings.GameMode.PauseHotkey, out var pause))
             _hook.Bind(pause, GameBlocker.TogglePause);
+        if (_settings.Launcher.Enabled && Hotkey.TryParse(_settings.Launcher.Hotkey, out var search))
+            _hook.Bind(search, ToggleLauncher);
         if (!_settings.Snap.Enabled) return;
         foreach (var (action, text) in _settings.Snap.Hotkeys)
         {
@@ -144,6 +164,15 @@ public partial class App : System.Windows.Application
             var a = action;
             _hook.Bind(hotkey, () => _snapper.Run(a));
         }
+    }
+
+    /// The Spotlight-style search box. Built on first use; a game in front never gets it.
+    private void ToggleLauncher()
+    {
+        if (_launcher is null) return;
+        if (GameBlocker.IsBlocking && _launcherWindow is not { IsVisible: true }) return;
+        _launcherWindow ??= new LauncherWindow(_launcher);
+        _launcherWindow.Toggle();
     }
 
     /// Opens the screenshot overlay once a menu or the island that asked for it has gone from the screen.
@@ -181,6 +210,7 @@ public partial class App : System.Windows.Application
         };
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Open island", null, (_, _) => _island.Open(null));
+        menu.Items.Add("Search…", null, (_, _) => Dispatcher.BeginInvoke(ToggleLauncher, DispatcherPriority.Background));
         menu.Items.Add("Settings…", null, (_, _) => OpenSettings());
         menu.Items.Add("Take a screenshot", null, (_, _) => TakeScreenshotSoon());
         menu.Items.Add(new Forms.ToolStripSeparator());

@@ -4,7 +4,7 @@ A PowerToys-style tray utility for Windows. See [FEATURES.md](FEATURES.md) for t
 
 Build with the .NET 10 SDK: `dotnet build src/PCEssentials/PCEssentials.csproj`. Run the tests with `dotnet test tests/PCEssentials.Tests`.
 
-**What's in it:** a Dynamic Island on the taskbar (AI agent limits for Claude Team seats and Codex, now playing, volume mixer, calendar, clipboard history, scratchpad, microphone, system monitor, keep awake), live CPU/GPU/RAM/network readouts beside the clock, Rectangle-style window snapping on Win shortcuts, a Lightshot-style screenshot tool, shake-to-find cursor, and a game mode that blocks the Windows key in games.
+**What's in it:** a Dynamic Island on the taskbar (AI agent limits for Claude Team seats and Codex, now playing, volume mixer, calendar, clipboard history, scratchpad, microphone, system monitor, keep awake), live CPU/GPU/RAM/network readouts beside the clock, Rectangle-style window snapping on Win shortcuts, a Lightshot-style screenshot tool, a Spotlight-style search box on Alt+Space (apps, files, windows, settings, calculator, web), shake-to-find cursor, and a game mode that blocks the Windows key in games.
 
 **License:** GPL-3.0-or-later (see [LICENSE](LICENSE) and [NOTICE](NOTICE)). CPU temperatures use [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) and need administrator rights plus the PawnIO driver.
 

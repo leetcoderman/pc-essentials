@@ -36,6 +36,7 @@ public sealed partial class SettingsWindow : Window
         tabs.Items.Add(Tab("Games", GamesTab()));
         tabs.Items.Add(Tab("Screenshots", ScreenshotsTab()));
         tabs.Items.Add(Tab("Mouse", MouseTab()));
+        tabs.Items.Add(Tab("Search", LauncherTab()));
         Content = tabs;
         Closed += (_, _) => _hook.Recorder = null;
     }

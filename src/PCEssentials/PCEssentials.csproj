@@ -28,6 +28,8 @@
     <PackageReference Include="Ical.Net" Version="5.2.4" />
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <!-- Windows Search index queries for the launcher's file results. -->
+    <PackageReference Include="System.Data.OleDb" Version="9.0.0" />
     <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
 

@@ -176,17 +176,19 @@ public sealed class LauncherService
 
     private static LauncherResult AppResult(AppEntry app, int score)
     {
-        var isFile = app.ParsingName.Contains('\\') && System.IO.File.Exists(app.ParsingName);
+        // Elevating and "show in folder" both work on the app's real file (exe or Start menu shortcut).
+        var file = app.FilePath;
+        var isExe = file is not null && !file.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase);
         return new LauncherResult
         {
             Id = "app:" + app.ParsingName, Title = app.Name, Kind = "App",
-            Subtitle = isFile ? app.ParsingName : app.ParsingName.Contains('!') ? "Microsoft Store app" : "Application",
-            IconSource = app.ShellPath, Score = score, CanReveal = isFile, CanRunAsAdmin = !app.ParsingName.Contains('!'),
-            CopyText = isFile ? app.ParsingName : null,
+            Subtitle = isExe ? file! : app.ParsingName.Contains('!') ? "Microsoft Store app" : "Application",
+            IconSource = app.ShellPath, Score = score, CanReveal = file is not null, CanRunAsAdmin = file is not null,
+            CopyText = isExe ? file : null,
             Run = mode =>
             {
-                if (mode == LaunchMode.Reveal && isFile) Reveal(app.ParsingName);
-                else if (mode == LaunchMode.Admin) RunAsAdmin(app.ShellPath);
+                if (mode == LaunchMode.Reveal && file is not null) Reveal(file);
+                else if (mode == LaunchMode.Admin && file is not null) RunAsAdmin(file);
                 else Shell(app.ShellPath);
             },
         };
@@ -263,7 +265,10 @@ public sealed class LauncherService
 
     private static void RunAsAdmin(string target)
     {
-        try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true, Verb = "runas" }); }
+        // From an elevated PC Essentials this starts the app elevated straight away; otherwise UAC asks.
+        // An exe starts in its own folder, as it would from a shortcut; a shortcut brings its own.
+        var dir = target.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) ? "" : System.IO.Path.GetDirectoryName(target) ?? "";
+        try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true, Verb = "runas", WorkingDirectory = dir }); }
         catch (System.ComponentModel.Win32Exception) { /* UAC prompt declined */ }
         catch (Exception ex) { Log.Error("launcher admin", ex); }
     }

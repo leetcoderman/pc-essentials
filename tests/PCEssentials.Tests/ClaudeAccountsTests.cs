@@ -91,6 +91,17 @@ public class ClaudeAccountsTests
         Assert.Equal(expected.Split(','), ClaudeAccounts.Move(["a", "b", "c"], email, by));
 
     [Fact]
+    public void SeatOnMainAccountMergesIntoMain()
+    {
+        var merged = ClaudeAccounts.MergedIntoMain([("default", Dexter, true), (".claude-dexter", Dexter.ToUpperInvariant(), false), (".claude-seat2", Hello, false), (".claude-seat3", null, false)]);
+        Assert.Equal(new Dictionary<string, string> { [".claude-dexter"] = "default" }, merged);
+    }
+
+    [Fact]
+    public void NothingMergesWhenMainIsSignedOut() =>
+        Assert.Empty(ClaudeAccounts.MergedIntoMain([("default", null, true), (".claude-seat1", Dexter, false), (".claude-seat2", Dexter, false)]));
+
+    [Fact]
     public void NoDuplicatesWhenAccountsDiffer() =>
         Assert.Empty(ClaudeAccounts.Duplicates([("default", Dexter), (".claude-seat1", Hello), (".claude-seat2", null), (".claude-seat3", null)]));
 }

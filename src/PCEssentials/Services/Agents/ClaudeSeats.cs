@@ -73,7 +73,9 @@ public sealed class ClaudeSeatService : IDisposable
         {
             Discover();
             var force = _forceAfter;
-            var due = Seats.Where(s => s.SignedIn && (s.TriedAt is null || DateTime.Now - s.TriedAt > CheckEvery || s.TriedAt < force)).ToList();
+            // A seat on the main profile's account is shown as the main profile, so checking it too only doubles the requests.
+            var merged = ClaudeAccounts.MergedIntoMain(Seats.Select(s => (s.Id, s.AccountId, s.IsDefault)));
+            var due = Seats.Where(s => s.SignedIn && !merged.ContainsKey(s.Id) && (s.TriedAt is null || DateTime.Now - s.TriedAt > CheckEvery || s.TriedAt < force)).ToList();
             _forceAfter = DateTime.MaxValue;
             foreach (var seat in due)
             {

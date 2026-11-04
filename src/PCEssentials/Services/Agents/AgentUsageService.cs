@@ -600,9 +600,14 @@ public sealed class AgentUsageService : IDisposable
             .Select(g => new RankedRow(g.Key, g.First().Provider, g.Sum(r => r.Tokens), g.Sum(r => r.Cost ?? 0)))
             .OrderByDescending(r => r.Cost).ThenByDescending(r => r.Tokens).Take(3).ToList();
 
+        var seatList = Seats.Seats;
+        // A seat folder on the main profile's account is the same account: one column, its costs and sessions folded in.
+        var merged = ClaudeAccounts.MergedIntoMain(seatList.Select(s => (s.Id, s.AccountId, s.IsDefault)));
+        string SeatOf(string id) => merged.TryGetValue(id, out var main) ? main : id;
+
         var live = new List<LiveSession>();
         foreach (var s in _claudeSessions.Values.Where(s => s.Status == "busy"))
-            live.Add(new LiveSession(AgentProvider.Claude, s.Project, s.Since, s.Place, s.Seat));
+            live.Add(new LiveSession(AgentProvider.Claude, s.Project, s.Since, s.Place, SeatOf(s.Seat)));
         foreach (var st in _codexFiles.Values)
             if (st.TurnStarted is { } started && !st.Remote && now - st.LastEvent < TimeSpan.FromMinutes(10))
                 live.Add(new LiveSession(AgentProvider.Codex, st.Project, started,
@@ -618,13 +623,13 @@ public sealed class AgentUsageService : IDisposable
         double WindowCost(IEnumerable<AgentRecord> rs, LimitWindow? w, TimeSpan length) =>
             w?.ResetsAt is { } reset ? rs.Where(r => r.Time >= reset - length).Sum(r => r.Cost ?? 0) : 0;
         var seats = new List<SeatSummary>();
-        var seatList = Seats.Seats;
-        var sameAs = ClaudeAccounts.Duplicates(seatList.Select(s => (s.Id, s.AccountId)));
-        foreach (var seat in seatList)
+        var sameAs = ClaudeAccounts.Duplicates(seatList.Where(s => !merged.ContainsKey(s.Id)).Select(s => (s.Id, s.AccountId)));
+        foreach (var seat in seatList.Where(s => !merged.ContainsKey(s.Id)))
         {
-            var mine = records.Where(r => r.Provider == AgentProvider.Claude && r.Seat == seat.Id).ToList();
-            var session = Expire(seat.Session);
-            var weeklyWindow = Expire(seat.Weekly);
+            var mine = records.Where(r => r.Provider == AgentProvider.Claude && SeatOf(r.Seat) == seat.Id).ToList();
+            var folded = seatList.Where(s => merged.TryGetValue(s.Id, out var m) && m == seat.Id).ToList();
+            var session = Expire(seat.Session) ?? folded.Select(s => Expire(s.Session)).FirstOrDefault(w => w is not null);
+            var weeklyWindow = Expire(seat.Weekly) ?? folded.Select(s => Expire(s.Weekly)).FirstOrDefault(w => w is not null);
             // For the account the Claude app is signed in to, what the app shows wins. On Windows, Claude Code's
             // own usage check can report a separate session window for the same account. Best is the app's
             // on-screen usage indicator (exact percent and reset), then its saved readings (15 minutes

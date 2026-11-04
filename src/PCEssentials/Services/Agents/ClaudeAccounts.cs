@@ -56,6 +56,19 @@ public static class ClaudeAccounts
         return list;
     }
 
+    /// Seat folders signed in to the same account as the main profile, each with the main profile's id.
+    /// The main profile follows whichever account the Claude app is on, so it is expected to match one
+    /// seat: that seat is shown as part of the main profile rather than as a second column.
+    public static Dictionary<string, string> MergedIntoMain(IEnumerable<(string Id, string? Account, bool IsMain)> seats)
+    {
+        var list = seats.ToList();
+        var merged = new Dictionary<string, string>();
+        if (list.FirstOrDefault(s => s.IsMain) is not { Account: { } main } mainSeat) return merged;
+        foreach (var s in list)
+            if (!s.IsMain && SameAccount(s.Account, main)) merged[s.Id] = mainSeat.Id;
+        return merged;
+    }
+
     /// Seats signed in to an account an earlier seat already uses, each with that earlier seat's id.
     public static Dictionary<string, string> Duplicates(IEnumerable<(string Id, string? Account)> seats)
     {

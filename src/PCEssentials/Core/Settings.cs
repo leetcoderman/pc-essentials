@@ -163,6 +163,9 @@ public sealed class LauncherSettings
     /// Alt+Space is PowerToys Run's default and sits where Cmd+Space is on a Mac keyboard. It replaces the
     /// window menu that Alt+Space normally opens.
     public string Hotkey { get; set; } = "Alt+Space";
+    /// Whether the shortcut opens Spotlight over a fullscreen app (videos, presentations). When off, the
+    /// shortcut passes through to that app instead. Games in game mode never get it either way.
+    public bool OpenInFullscreen { get; set; } = true;
     /// Files and folders from the Windows Search index.
     public bool SearchFiles { get; set; } = true;
     public bool SearchWindows { get; set; } = true;

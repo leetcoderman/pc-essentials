@@ -30,7 +30,7 @@ public sealed class KeyboardHook : IDisposable
     private readonly HookProc _proc;
     private IntPtr _hook;
     private readonly Dispatcher _dispatcher;
-    private readonly List<(HotkeyModifiers Modifiers, int Vk, Action Action)> _bindings = new();
+    private readonly List<(HotkeyModifiers Modifiers, int Vk, Action Action, Func<bool>? When)> _bindings = new();
     private readonly HashSet<int> _swallowedDown = new();
     private bool _updateQueued;
     private Action<Hotkey>? _recorder;
@@ -42,11 +42,13 @@ public sealed class KeyboardHook : IDisposable
         _proc = Callback;
     }
 
-    public void Bind(Hotkey hotkey, Action action)
+    /// when, if given, is asked on each press: false lets the press through to the app untouched. It runs
+    /// inside the hook, so it must be quick and must not send messages to other windows.
+    public void Bind(Hotkey hotkey, Action action, Func<bool>? when = null)
     {
         var vk = KeyInterop.VirtualKeyFromKey(hotkey.Key);
         _bindings.RemoveAll(b => b.Modifiers == (HotkeyModifiers)hotkey.Modifiers && b.Vk == vk);
-        _bindings.Add(((HotkeyModifiers)hotkey.Modifiers, vk, action));
+        _bindings.Add(((HotkeyModifiers)hotkey.Modifiers, vk, action, when));
         QueueUpdate();
     }
 
@@ -153,6 +155,7 @@ public sealed class KeyboardHook : IDisposable
             foreach (var binding in _bindings)
             {
                 if (!HotkeyMatcher.Matches(binding.Modifiers, binding.Vk, held, vk)) continue;
+                if (binding.When is { } when && !when()) break;
                 // Auto-repeat of a held key does not fire again.
                 if (_swallowedDown.Add(vk))
                 {

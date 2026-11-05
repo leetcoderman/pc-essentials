@@ -4,20 +4,23 @@ namespace PCEssentials.UI;
 
 public sealed partial class SettingsWindow
 {
-    // ---------------- Search ----------------
+    // ---------------- Spotlight ----------------
 
     private UIElement LauncherTab()
     {
         var p = Panel();
         var l = _s.Launcher;
-        p.Children.Add(Heading("Search"));
-        p.Children.Add(Check("Open a search box with a shortcut", l.Enabled, v => { l.Enabled = v; Changed(); _rebindShortcuts(); }));
+        p.Children.Add(Heading("Spotlight"));
+        p.Children.Add(Check("Open Spotlight with a shortcut", l.Enabled, v => { l.Enabled = v; Changed(); _rebindShortcuts(); }));
         p.Children.Add(Note("Like Spotlight on a Mac: start typing to find apps, files, open windows, Windows settings and system " +
                             "commands, do sums (2*(3+4), sqrt(2)) or search the web. Results you pick often move up. " +
                             "Start with ? to search only files, or < to list open windows."));
         p.Children.Add(Labeled("Shortcut", ShortcutBox(() => l.Hotkey, v => l.Hotkey = v), 200));
         p.Children.Add(Note("Alt+Space sits where Cmd+Space is on a Mac keyboard, and is also what PowerToys Run uses. " +
                             "It replaces the window menu Alt+Space normally opens. Win+Space switches keyboard languages, so it is left alone."));
+        p.Children.Add(Check("Open over fullscreen apps", l.OpenInFullscreen, v => { l.OpenInFullscreen = v; Changed(); }));
+        p.Children.Add(Note("When off, the shortcut goes to a fullscreen video, presentation or app instead of opening Spotlight. " +
+                            "Games blocked by game mode never get Spotlight either way."));
 
         p.Children.Add(Heading("Results"));
         p.Children.Add(Check("Include files and folders (from the Windows Search index)", l.SearchFiles, v => { l.SearchFiles = v; Changed(); }));

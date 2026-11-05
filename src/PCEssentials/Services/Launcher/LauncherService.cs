@@ -253,8 +253,28 @@ public sealed class LauncherService
     /// Opens through the unelevated shell: see the class comment.
     public static void Shell(string target)
     {
-        try { Process.Start(new ProcessStartInfo("explorer.exe", Quote(target)) { UseShellExecute = false }); }
+        try
+        {
+            // explorer.exe silently drops a web address with a query string (?q=...), so web addresses go
+            // through a temporary Internet shortcut, which explorer opens in the default browser, unelevated.
+            if (target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || target.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                target = WebShortcut(target);
+            Process.Start(new ProcessStartInfo("explorer.exe", Quote(target)) { UseShellExecute = false });
+        }
         catch (Exception ex) { Log.Error("launcher open", ex); }
+    }
+
+    /// Writes url to a fresh .url file and returns its path. Shortcuts older than a minute are cleared away,
+    /// long after explorer has read them.
+    private static string WebShortcut(string url)
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "PCEssentials", "open");
+        System.IO.Directory.CreateDirectory(dir);
+        foreach (var old in System.IO.Directory.EnumerateFiles(dir, "*.url"))
+            try { if (System.IO.File.GetLastWriteTimeUtc(old) < DateTime.UtcNow.AddMinutes(-1)) System.IO.File.Delete(old); } catch (System.IO.IOException) { } catch (UnauthorizedAccessException) { }
+        var path = System.IO.Path.Combine(dir, Guid.NewGuid().ToString("N") + ".url");
+        System.IO.File.WriteAllText(path, $"[InternetShortcut]\r\nURL={url}\r\n");
+        return path;
     }
 
     public static void Reveal(string path)

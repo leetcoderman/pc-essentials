@@ -156,7 +156,7 @@ public partial class App : System.Windows.Application
         if (_settings.GameMode.Enabled && Hotkey.TryParse(_settings.GameMode.PauseHotkey, out var pause))
             _hook.Bind(pause, GameBlocker.TogglePause);
         if (_settings.Launcher.Enabled && Hotkey.TryParse(_settings.Launcher.Hotkey, out var search))
-            _hook.Bind(search, ToggleLauncher);
+            _hook.Bind(search, ToggleLauncher, LauncherShortcutApplies);
         if (!_settings.Snap.Enabled) return;
         foreach (var (action, text) in _settings.Snap.Hotkeys)
         {
@@ -165,6 +165,11 @@ public partial class App : System.Windows.Application
             _hook.Bind(hotkey, () => _snapper.Run(a));
         }
     }
+
+    /// Asked inside the keyboard hook: with "open over fullscreen apps" off, the shortcut goes to a fullscreen
+    /// app in front instead. Spotlight itself is never fullscreen, so the shortcut still closes it.
+    private bool LauncherShortcutApplies() =>
+        _settings.Launcher.OpenInFullscreen || _launcherWindow is { IsVisible: true } || !Native.ForegroundIsFullscreen();
 
     /// The Spotlight-style search box. Built on first use; a game in front never gets it.
     private void ToggleLauncher()
@@ -210,7 +215,7 @@ public partial class App : System.Windows.Application
         };
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Open island", null, (_, _) => _island.Open(null));
-        menu.Items.Add("Search…", null, (_, _) => Dispatcher.BeginInvoke(ToggleLauncher, DispatcherPriority.Background));
+        menu.Items.Add("Spotlight…", null, (_, _) => Dispatcher.BeginInvoke(ToggleLauncher, DispatcherPriority.Background));
         menu.Items.Add("Settings…", null, (_, _) => OpenSettings());
         menu.Items.Add("Take a screenshot", null, (_, _) => TakeScreenshotSoon());
         menu.Items.Add(new Forms.ToolStripSeparator());

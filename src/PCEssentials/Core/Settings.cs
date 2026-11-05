@@ -49,6 +49,13 @@ public sealed class IslandSettings
     /// Agents left out of the resting island ("Claude", "Codex").
     public List<string> AgentsRestingHidden { get; set; } = [];
     public bool ShowVolumeChanges { get; set; } = true;
+    /// Hides Windows' own volume and media pop-up while the island shows volume changes. On laptops the same
+    /// pop-up carries brightness, which then goes too.
+    public bool ReplaceWindowsPopup { get; set; } = true;
+    /// Shows Caps Lock turning on and off.
+    public bool ShowCapsLock { get; set; } = true;
+    /// Shows the microphone muting or unmuting and the sound output switching to another device.
+    public bool ShowDeviceChanges { get; set; } = true;
     public bool ShowKeepAwakeInCapsule { get; set; } = true;
     public string LastPage { get; set; } = "agents";
 }

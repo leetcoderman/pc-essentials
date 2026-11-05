@@ -44,6 +44,11 @@ public sealed class IslandWindow : Window
     private string? _restKey;
     private IntPtr _hwnd, _previousForeground;
     private bool _open, _keyboard, _hovering;
+    /// Set by scrolling on the closed capsule (it changes the volume), so hovering doesn't open the island
+    /// under the scroll; cleared when the pointer leaves.
+    private bool _scrolled;
+    private int _wheel;
+    private bool? _capsLock;
     private IslandPage? _current;
 
     // Capsule parts.
@@ -113,12 +118,30 @@ public sealed class IslandWindow : Window
         _surface.MouseLeave += (_, _) =>
         {
             _hovering = false;
+            _scrolled = false;
             _hoverTimer.Stop();
             if (!_open) UpdateCapsule();
             else if (_ctx.Settings.Island.OpenOnHover) _exitTimer.Start();
         };
         _surface.MouseRightButtonUp += (_, e) => { e.Handled = true; ShowContextMenu(); };
-        _hoverTimer.Tick += (_, _) => { _hoverTimer.Stop(); if (_hovering && !_open) Open(null); };
+        _hoverTimer.Tick += (_, _) => { _hoverTimer.Stop(); if (_hovering && !_open && !_scrolled) Open(null); };
+        // Scrolling on the closed capsule changes the volume, a notch at a time like the volume keys (2%).
+        // Touchpads send small steps, so they add up to whole notches.
+        _surface.MouseWheel += (_, e) =>
+        {
+            if (_open) return;
+            e.Handled = true;
+            _hoverTimer.Stop();
+            _scrolled = true;
+            _wheel += e.Delta;
+            var notches = _wheel / 120;
+            if (notches == 0) return;
+            _wheel -= notches * 120;
+            var audio = _ctx.Audio;
+            audio.OutputVolume = (float)(Math.Round(Math.Clamp(audio.OutputVolume + notches * 0.02, 0, 1) * 50) / 50);
+            // The volume up key unmutes too.
+            if (notches > 0 && audio.OutputMuted) audio.OutputMuted = false;
+        };
         // Leaving the open island closes it, like the Mac's hover-opened island (0.18 s grace).
         // A menu the island opened sits outside it, so the island stays while one is up.
         _exitTimer.Tick += (_, _) =>
@@ -152,6 +175,17 @@ public sealed class IslandWindow : Window
         {
             if (!_ctx.Settings.Island.ShowVolumeChanges || (_open && _current?.Id == "mixer")) return;
             ShowNotice(muted ? Ui.GMute : Ui.GVolume, Colors.White, "", null, muted ? 0 : level, TimeSpan.FromSeconds(1.6));
+        };
+        ctx.Audio.InputMuteChanged += muted =>
+        {
+            if (!_ctx.Settings.Island.ShowDeviceChanges) return;
+            ShowNotice(muted ? Ui.GMicOff : Ui.GMic, muted ? Ui.Red : Colors.White, muted ? "Microphone muted" : "Microphone on",
+                null, null, TimeSpan.FromSeconds(1.8));
+        };
+        ctx.Audio.OutputDeviceChanged += name =>
+        {
+            if (!_ctx.Settings.Island.ShowDeviceChanges) return;
+            ShowNotice(Ui.GSpeaker, Colors.White, name, null, null, TimeSpan.FromSeconds(2.5));
         };
         ctx.Settings.Changed += () => Dispatcher.BeginInvoke(() => { ApplyLayout(); RebuildBar(); UpdateCapsule(); });
         ApplyLayout();
@@ -774,6 +808,11 @@ public sealed class IslandWindow : Window
 
     private void FastTick()
     {
+        // Caps Lock has no event to listen to; its toggle state is cheap to read.
+        var caps = (GetKeyState(0x14 /* VK_CAPITAL */) & 1) != 0;
+        if (_capsLock is bool was && was != caps && _ctx.Settings.Island.ShowCapsLock)
+            ShowNotice(Ui.GKeyboard, caps ? Ui.Green : Colors.White, caps ? "Caps Lock on" : "Caps Lock off", null, null, TimeSpan.FromSeconds(1.4));
+        _capsLock = caps;
         // Clicking the taskbar raises it above other topmost windows; win back the top quickly.
         if (OnTaskbar && _hwnd != IntPtr.Zero && IsVisible && ++_fastCount % 5 == 0)
             Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
@@ -807,6 +846,29 @@ public sealed class IslandWindow : Window
     }
 
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vk);
+    [DllImport("user32.dll")] private static extern short GetKeyState(int vk);
+
+    /// Whether a notice would be seen. On a taskbar that hides itself the island is out of sight most of the
+    /// time, so Windows' own volume pop-up is better left alone.
+    public bool CanShowNotices => !OnTaskbar || !TaskbarAutoHides();
+
+    private static bool TaskbarAutoHides()
+    {
+        var data = new APPBARDATA { cbSize = Marshal.SizeOf<APPBARDATA>() };
+        return (SHAppBarMessage(4 /* ABM_GETSTATE */, ref data) & 1 /* ABS_AUTOHIDE */) != 0;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct APPBARDATA
+    {
+        public int cbSize;
+        public IntPtr hWnd;
+        public uint uCallbackMessage, uEdge;
+        public Native.RECT rc;
+        public IntPtr lParam;
+    }
+
+    [DllImport("shell32.dll")] private static extern uint SHAppBarMessage(uint message, ref APPBARDATA data);
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out System.Drawing.Point p);
 
     /// On the taskbar the open panel lifts above the taskbar, away from the capsule the pointer opened it

@@ -28,7 +28,7 @@ public static class Ui
         GClose = "", GPin = "", GUnpin = "", GLeft = "", GRight = "", GRefresh = "",
         GSpeaker = "", GShuffle = "", GImage = "", GFolder = "", GText = "", GTimer = "",
         GCpu = "", GMemory = "", GNetwork = "", GDisk = "", GGpu = "", GDown = "",
-        GUp = "", GCheck = "", GReset = "", GCoffee = "", GChevronDown = "";
+        GUp = "", GCheck = "", GReset = "", GCoffee = "", GKeyboard = "", GChevronDown = "";
 
     public static Color C(string hex) => (Color)ColorConverter.ConvertFromString(hex);
 

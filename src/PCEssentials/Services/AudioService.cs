@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 using PCEssentials.Core;
 
 namespace PCEssentials.Services;
@@ -40,19 +41,67 @@ public sealed class AudioService : IDisposable
 
     /// Master output level or mute changed (from any app, the volume keys, or this one). Raised on the UI thread.
     public event Action<float, bool>? OutputVolumeChanged;
+    /// The default microphone was muted (true) or unmuted. Raised on the UI thread.
+    public event Action<bool>? InputMuteChanged;
+    /// Windows switched the default sound output to another device, named in the argument. Raised on the UI thread.
+    public event Action<string>? OutputDeviceChanged;
 
-    public AudioService() => Refresh();
+    private readonly DeviceWatcher _watcher;
+    private bool? _inputMuted;
+
+    public AudioService()
+    {
+        Refresh();
+        _watcher = new DeviceWatcher(this);
+        Safe(() => _enumerator.RegisterEndpointNotificationCallback(_watcher));
+    }
 
     public void Refresh()
     {
         if (_output is not null) Safe(() => _output.AudioEndpointVolume.OnVolumeNotification -= OnVolume);
+        if (_input is not null) Safe(() => _input.AudioEndpointVolume.OnVolumeNotification -= OnInputVolume);
         try { _output = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia); } catch { _output = null; }
         try { _input = _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications); } catch { _input = null; }
         if (_output is not null) Safe(() => _output.AudioEndpointVolume.OnVolumeNotification += OnVolume);
+        if (_input is not null) Safe(() => _input.AudioEndpointVolume.OnVolumeNotification += OnInputVolume);
+        _inputMuted = _input is null ? null : InputMuted;
     }
 
     private void OnVolume(AudioVolumeNotificationData data) =>
         _dispatcher.BeginInvoke(() => OutputVolumeChanged?.Invoke(data.MasterVolume, data.Muted));
+
+    /// Only mute changes are passed on: the microphone level moves on its own with automatic gain in many apps.
+    private void OnInputVolume(AudioVolumeNotificationData data) =>
+        _dispatcher.BeginInvoke(() =>
+        {
+            if (_inputMuted == data.Muted) return;
+            _inputMuted = data.Muted;
+            InputMuteChanged?.Invoke(data.Muted);
+        });
+
+    /// Follows Windows' default devices, so the volume keys keep being seen after the output switches to, say,
+    /// a headset. Without it the island would watch the old device, and with Windows' pop-up hidden nothing
+    /// would show the volume at all. Windows calls this on its own thread.
+    internal sealed class DeviceWatcher(AudioService audio) : IMMNotificationClient
+    {
+        public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+        {
+            // Each role is reported on its own; only the ones this service follows matter.
+            if (!(flow == DataFlow.Render && role == Role.Multimedia) && !(flow == DataFlow.Capture && role == Role.Communications)) return;
+            audio._dispatcher.BeginInvoke(() =>
+            {
+                var before = audio._output?.ID;
+                audio.Refresh();
+                // A switch made here (the mixer) has already refreshed, so only outside switches are announced.
+                if (flow == DataFlow.Render && audio._output is { } now && now.ID != before) audio.OutputDeviceChanged?.Invoke(audio.OutputName);
+            });
+        }
+
+        public void OnDeviceStateChanged(string deviceId, DeviceState newState) { }
+        public void OnDeviceAdded(string pwstrDeviceId) { }
+        public void OnDeviceRemoved(string deviceId) { }
+        public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
+    }
 
     public string OutputName => _output?.FriendlyName ?? "No output";
     public string InputName => _input?.FriendlyName ?? "No microphone";
@@ -245,7 +294,11 @@ public sealed class AudioService : IDisposable
         try { f(); } catch { }
     }
 
-    public void Dispose() => _enumerator.Dispose();
+    public void Dispose()
+    {
+        Safe(() => _enumerator.UnregisterEndpointNotificationCallback(_watcher));
+        _enumerator.Dispose();
+    }
 
     // Undocumented but long-stable interface Windows' own sound settings use to change the default device.
     [ComImport, Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9")]

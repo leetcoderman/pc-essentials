@@ -223,7 +223,11 @@ public sealed partial class SettingsWindow : Window
         p.Children.Add(Check("Glass: show the open island as blurred, tinted glass", i.Glass, v => { i.Glass = v; Changed(); }));
         p.Children.Add(Check("Hide while a fullscreen app is in front", i.HideInFullscreen, v => { i.HideInFullscreen = v; Changed(); }));
         p.Children.Add(Check("Show agents while they work, with an elapsed timer", i.ShowAgentsWhileWorking, v => { i.ShowAgentsWhileWorking = v; Changed(); }));
-        p.Children.Add(Check("Show volume changes", i.ShowVolumeChanges, v => { i.ShowVolumeChanges = v; Changed(); }));
+        p.Children.Add(Check("Show volume changes (scroll on the closed island to change the volume)", i.ShowVolumeChanges, v => { i.ShowVolumeChanges = v; Changed(); }));
+        p.Children.Add(Check("Hide Windows' own volume and media pop-up while the island shows volume changes (on laptops, the brightness pop-up too)",
+            i.ReplaceWindowsPopup, v => { i.ReplaceWindowsPopup = v; Changed(); }));
+        p.Children.Add(Check("Show Caps Lock turning on and off", i.ShowCapsLock, v => { i.ShowCapsLock = v; Changed(); }));
+        p.Children.Add(Check("Show the microphone muting and the sound output switching device", i.ShowDeviceChanges, v => { i.ShowDeviceChanges = v; Changed(); }));
         p.Children.Add(Check("Show keep awake time left in the closed island", i.ShowKeepAwakeInCapsule, v => { i.ShowKeepAwakeInCapsule = v; Changed(); }));
 
         p.Children.Add(Heading("At rest"));

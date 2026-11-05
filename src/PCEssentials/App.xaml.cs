@@ -34,6 +34,7 @@ public partial class App : System.Windows.Application
     private LauncherService? _launcher;
     private LauncherWindow? _launcherWindow;
     private string? _balloonPath;
+    private NativeOsd? _osd;
 
     /// Lets an update script ask this copy to quit (it may run elevated, out of the script's reach):
     /// creating quit.request in %APPDATA%\PCEssentials or next to the exe quits within a second. The exe
@@ -78,7 +79,12 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
         DispatcherUnhandledException += (_, ex) => { Log.Error("ui", ex.Exception); ex.Handled = true; };
-        AppDomain.CurrentDomain.UnhandledException += (_, ex) => Log.Error("domain", (Exception)ex.ExceptionObject);
+        AppDomain.CurrentDomain.UnhandledException += (_, ex) =>
+        {
+            Log.Error("domain", (Exception)ex.ExceptionObject);
+            // The process is going down: don't leave Windows without its volume pop-up.
+            try { _osd?.Restore(); } catch { }
+        };
 
         // One instance only. After "Restart as administrator" the old one may still be exiting, so wait a moment.
         _single = new Mutex(true, @"Local\PCEssentials.SingleInstance", out var first);
@@ -123,6 +129,10 @@ public partial class App : System.Windows.Application
         };
         _island = new IslandWindow(ctx);
         if (_settings.Island.Enabled) _island.Show();
+        _osd = new NativeOsd(() => _settings.Island is { Enabled: true, ShowVolumeChanges: true, ReplaceWindowsPopup: true } && _island.CanShowNotices);
+        _audio.OutputVolumeChanged += (_, _) => _osd.Update();
+        _settings.Changed += () => Dispatcher.BeginInvoke(_osd.Update);
+        _osd.Update();
         _launcher = new LauncherService(_settings,
         [
             new("PC Essentials Settings", "Open PC Essentials settings", Ui.GSettings, OpenSettings, "preferences", "options"),
@@ -296,6 +306,7 @@ public partial class App : System.Windows.Application
         try
         {
             _settings.Save();
+            _osd?.Restore();
             if (_tray is not null) _tray.Visible = false;
             _tray?.Dispose();
             GameBlocker.Dispose();

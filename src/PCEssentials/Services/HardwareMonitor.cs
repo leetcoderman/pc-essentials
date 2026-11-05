@@ -36,6 +36,13 @@ public sealed class HardwareMonitor : IDisposable
     private readonly Thread _thread;
     private volatile bool _running = true;
     private readonly Dictionary<string, (long Rx, long Tx)> _lastNet = new();
+    /// The adapters counted for network speed. Listing them takes ~5 ms of CPU, so it is done again only
+    /// when Windows reports a network change, and every 30 seconds in case a change went unreported.
+    private NetworkInterface[] _adapters = [];
+    private DateTime _adaptersAt = DateTime.MinValue;
+    private volatile bool _adaptersStale = true;
+    /// The NVIDIA GPU through NVML when there is one; otherwise LibreHardwareMonitor reads the GPU.
+    private NvmlGpu? _nvml;
     private DateTime _lastNetAt = DateTime.UtcNow;
     private long _sessionRx, _sessionTx;
     private readonly List<double> _cpuHistory = new(), _netDownHistory = new(), _netUpHistory = new(), _ramHistory = new();
@@ -51,13 +58,21 @@ public sealed class HardwareMonitor : IDisposable
 
     public HardwareMonitor()
     {
-        _computer = new Computer { IsCpuEnabled = true, IsGpuEnabled = true, IsMemoryEnabled = true, IsMotherboardEnabled = false };
+        // GPUs are added in Loop, once it is known whether NVML can read the GPU instead.
+        _computer = new Computer { IsCpuEnabled = true, IsGpuEnabled = false, IsMemoryEnabled = true, IsMotherboardEnabled = false };
+        NetworkChange.NetworkAddressChanged += OnNetworkChanged;
+        NetworkChange.NetworkAvailabilityChanged += OnNetworkChanged;
         _thread = new Thread(Loop) { IsBackground = true, Name = "HardwareMonitor", Priority = ThreadPriority.BelowNormal };
         _thread.Start();
     }
 
+    private void OnNetworkChanged(object? sender, EventArgs e) => _adaptersStale = true;
+
     private void Loop()
     {
+        _nvml = NvmlGpu.TryOpen();
+        _computer.IsGpuEnabled = _nvml is null;
+        Log.Info(_nvml is null ? "gpu: LibreHardwareMonitor" : $"gpu: NVML ({_nvml.Name})");
         try { _computer.Open(); }
         catch (Exception ex) { Log.Error("hardware open", ex); }
 
@@ -87,6 +102,8 @@ public sealed class HardwareMonitor : IDisposable
             catch (Exception ex) { Log.Error("hardware read", ex); }
             Thread.Sleep(1000);
         }
+        // Shut NVML down here rather than in Dispose, so it never closes under a read in progress.
+        _nvml?.Dispose();
     }
 
     /// Records which CPU and GPU sensors exist, to explain a missing temperature.
@@ -166,6 +183,12 @@ public sealed class HardwareMonitor : IDisposable
             }
         }
 
+        if (_nvml is not null)
+        {
+            gpuName = _nvml.Name;
+            (gpuLoad, gpuTemp, gpuMemUsed, gpuMemTotal) = _nvml.Read();
+        }
+
         var (up, down) = ReadNetwork();
         return new HardwareSnapshot
         {
@@ -195,13 +218,8 @@ public sealed class HardwareMonitor : IDisposable
         var seconds = Math.Max(0.2, (now - _lastNetAt).TotalSeconds);
         _lastNetAt = now;
         long dRx = 0, dTx = 0;
-        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+        foreach (var nic in Adapters())
         {
-            if (nic.OperationalStatus != OperationalStatus.Up) continue;
-            if (nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel) continue;
-            var desc = nic.Description;
-            // Skip virtual adapters (Hyper-V, WSL, VPN filters) so traffic is not counted twice.
-            if (desc.Contains("Hyper-V") || desc.Contains("Virtual") || desc.Contains("Filter") || desc.Contains("WFP")) continue;
             IPv4InterfaceStatistics stats;
             try { stats = nic.GetIPv4Statistics(); } catch { continue; }
             var rx = stats.BytesReceived;
@@ -216,6 +234,26 @@ public sealed class HardwareMonitor : IDisposable
         _sessionRx += dRx;
         _sessionTx += dTx;
         return (dTx / seconds, dRx / seconds);
+    }
+
+    private NetworkInterface[] Adapters()
+    {
+        if (!_adaptersStale && DateTime.UtcNow - _adaptersAt < TimeSpan.FromSeconds(30)) return _adapters;
+        _adaptersStale = false;
+        _adaptersAt = DateTime.UtcNow;
+        try
+        {
+            _adapters = NetworkInterface.GetAllNetworkInterfaces().Where(nic =>
+            {
+                if (nic.OperationalStatus != OperationalStatus.Up) return false;
+                if (nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel) return false;
+                var desc = nic.Description;
+                // Skip virtual adapters (Hyper-V, WSL, VPN filters) so traffic is not counted twice.
+                return !(desc.Contains("Hyper-V") || desc.Contains("Virtual") || desc.Contains("Filter") || desc.Contains("WFP"));
+            }).ToArray();
+        }
+        catch (NetworkInformationException ex) { Log.Error("network adapters", ex); }
+        return _adapters;
     }
 
     private static List<(string, double, double)> ReadDisks()
@@ -236,6 +274,8 @@ public sealed class HardwareMonitor : IDisposable
     public void Dispose()
     {
         _running = false;
+        NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
+        NetworkChange.NetworkAvailabilityChanged -= OnNetworkChanged;
         try { _computer.Close(); } catch { }
     }
 }

@@ -5,28 +5,6 @@ using PCEssentials.Core;
 
 namespace PCEssentials.Services.Agents;
 
-public enum AgentProvider { Claude, Codex }
-
-public sealed class AgentRecord
-{
-    public AgentProvider Provider { get; init; }
-    public DateTime Time { get; init; }
-    public string Model { get; init; } = "";
-    public string Project { get; init; } = "";
-    /// Which Claude profile wrote it: "default" (~/.claude) or a seat folder name (".claude-seat1").
-    public string Seat { get; init; } = "default";
-    public long Input { get; set; }
-    public long Output { get; set; }
-    public long CacheRead { get; set; }
-    public long CacheWrite { get; set; }
-    public long CacheWriteLong { get; set; }
-    public bool Fast { get; init; }
-    public bool UsOnly { get; init; }
-    public int WebSearches { get; set; }
-    public double? Cost { get; set; }
-    public long Tokens => Input + Output + CacheRead + CacheWrite;
-}
-
 /// Estimated: the reset time was worked out from readings rather than reported (shown with "≈").
 public sealed record LimitWindow(string Label, double UsedPercent, DateTime? ResetsAt, bool Estimated = false);
 
@@ -39,10 +17,6 @@ public sealed record LiveSession(AgentProvider Provider, string Project, DateTim
 public sealed record SeatSummary(string Id, string? Email, string? OrgName, string? PlanName, bool IsDefault, bool SignedIn,
     LimitWindow? Session, LimitWindow? Weekly, double SessionCost, double MonthCost, string? Error, string ConfigDir,
     string? SameAccountAs = null);
-
-public sealed record PeriodTotal(long Tokens, double Cost, int Requests, int Unpriced);
-
-public sealed record RankedRow(string Name, AgentProvider Provider, long Tokens, double Cost);
 
 public sealed record AgentSummary
 {
@@ -92,6 +66,10 @@ public sealed class AgentUsageService : IDisposable
     public ClaudeSeatService Seats { get; }
     public CodexResetService Resets { get; } = new();
     private readonly Dictionary<string, AgentRecord> _records = new();
+    /// Bumped on every change to _records (under _gate), so Publish knows when its cached stats are stale.
+    private int _recordsVersion;
+    private AgentStats? _stats;
+    private int _statsVersion = -1;
     private readonly Dictionary<string, long> _cursors = new();
     private readonly Dictionary<string, (string Status, DateTime Since, string Project, string Place, string Seat)> _claudeSessions = new();
     private readonly Dictionary<string, CodexFileState> _codexFiles = new();
@@ -203,7 +181,10 @@ public sealed class AgentUsageService : IDisposable
             lock (_gate)
             {
                 foreach (var key in _records.Where(kv => kv.Value.Time < cutoff).Select(kv => kv.Key).ToList())
+                {
                     _records.Remove(key);
+                    _recordsVersion++;
+                }
             }
             Publish();
             if (_dirty && (firstScan || DateTime.Now - _lastCacheWrite > TimeSpan.FromMinutes(10))) SaveCache();
@@ -239,6 +220,7 @@ public sealed class AgentUsageService : IDisposable
                     v.Cost = _prices.Cost(v);
                     _records[k] = v;
                 }
+                _recordsVersion++;
             }
             foreach (var (k, v) in cache.Cursors) _cursors[k] = v;
             foreach (var (k, v) in cache.CodexFiles) _codexFiles[k] = v;
@@ -248,7 +230,11 @@ public sealed class AgentUsageService : IDisposable
         catch (Exception ex)
         {
             Log.Error("agents cache load", ex);
-            lock (_gate) _records.Clear();
+            lock (_gate)
+            {
+                _records.Clear();
+                _recordsVersion++;
+            }
             _cursors.Clear();
             _codexFiles.Clear();
         }
@@ -304,9 +290,13 @@ public sealed class AgentUsageService : IDisposable
         if (!Directory.Exists(dir)) return [];
         try
         {
-            return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
-                .Where(f => AgentLogReader.IsLog(f) && File.GetLastWriteTime(f) >= cutoff)
-                .OrderBy(File.GetLastWriteTime)
+            // The times come with the directory listing instead of two more lookups per file: the scan runs every
+            // 30 seconds over thousands of logs, and that cut it from ~420 to ~170 ms. The listing can lag for a log
+            // still open for writing, which is fine for sorting; AgentLogReader.Read asks the file for its real size.
+            return new DirectoryInfo(dir).EnumerateFiles("*", SearchOption.AllDirectories)
+                .Where(f => AgentLogReader.IsLog(f.FullName) && f.LastWriteTime >= cutoff)
+                .OrderBy(f => f.LastWriteTime)
+                .Select(f => f.FullName)
                 .ToList();
         }
         catch { return []; }
@@ -475,6 +465,7 @@ public sealed class AgentUsageService : IDisposable
     {
         lock (_gate)
         {
+            _recordsVersion++;
             if (_records.TryGetValue(key, out var existing))
             {
                 // Claude writes one line per content block of the same message; keep the largest counts.
@@ -557,48 +548,25 @@ public sealed class AgentUsageService : IDisposable
         catch { return false; }
     }
 
+    /// The record-derived part of the summary, worked out again only when the records change or a new day starts.
+    /// Session status changes, seat checks and the Claude app's readings republish often, but leave the records alone.
+    private AgentStats Stats(DateTime now)
+    {
+        lock (_gate)
+        {
+            if (_stats is null || _statsVersion != _recordsVersion || _stats.Day != now.Date)
+            {
+                _stats = AgentStats.Compute(_records.Values, now);
+                _statsVersion = _recordsVersion;
+            }
+            return _stats;
+        }
+    }
+
     private void Publish()
     {
-        List<AgentRecord> records;
-        lock (_gate) records = _records.Values.ToList();
         var now = DateTime.Now;
-        var today = now.Date;
-
-        Dictionary<AgentProvider, PeriodTotal> Totals(DateTime from) => records
-            .Where(r => r.Time >= from)
-            .GroupBy(r => r.Provider)
-            .ToDictionary(g => g.Key, g => new PeriodTotal(
-                g.Sum(r => r.Tokens), g.Sum(r => r.Cost ?? 0), g.Count(), g.Count(r => r.Cost is null)));
-
-        var daily = Enumerable.Range(0, 7).Select(i =>
-        {
-            var day = today.AddDays(i - 6);
-            return records.Where(r => r.Time.Date == day)
-                .GroupBy(r => r.Provider).ToDictionary(g => g.Key, g => g.Sum(r => r.Cost ?? 0));
-        }).ToList();
-
-        List<Dictionary<AgentProvider, double>> Buckets(int count, Func<int, (DateTime From, DateTime To)> range) =>
-            Enumerable.Range(0, count).Select(i =>
-            {
-                var (from, to) = range(i);
-                return records.Where(r => r.Time >= from && r.Time < to)
-                    .GroupBy(r => r.Provider).ToDictionary(g => g.Key, g => g.Sum(r => r.Cost ?? 0));
-            }).ToList();
-        var daily30 = Buckets(30, i => (today.AddDays(i - 29), today.AddDays(i - 28)));
-        var hourly = Buckets(24, i => (today.AddHours(i), today.AddHours(i + 1)));
-        var byDay = records.GroupBy(r => r.Time.Date).ToDictionary(g => g.Key, g => g.Sum(r => r.Cost ?? 0));
-        var heatmap = Enumerable.Range(0, 91).Select(i => byDay.GetValueOrDefault(today.AddDays(i - 90))).ToList();
-        var allTimeModels = records.GroupBy(r => (r.Provider, Name: ModelDisplay(r.Model)))
-            .Select(g => new RankedRow(g.Key.Name, g.Key.Provider, g.Sum(r => r.Tokens), g.Sum(r => r.Cost ?? 0)))
-            .OrderByDescending(r => r.Cost).ThenByDescending(r => r.Tokens).Take(3).ToList();
-
-        var month = records.Where(r => r.Time >= today.AddDays(-30)).ToList();
-        var models = month.GroupBy(r => (r.Provider, Name: ModelDisplay(r.Model)))
-            .Select(g => new RankedRow(g.Key.Name, g.Key.Provider, g.Sum(r => r.Tokens), g.Sum(r => r.Cost ?? 0)))
-            .OrderByDescending(r => r.Cost).ThenByDescending(r => r.Tokens).Take(3).ToList();
-        var projects = month.Where(r => r.Project.Length > 0).GroupBy(r => r.Project)
-            .Select(g => new RankedRow(g.Key, g.First().Provider, g.Sum(r => r.Tokens), g.Sum(r => r.Cost ?? 0)))
-            .OrderByDescending(r => r.Cost).ThenByDescending(r => r.Tokens).Take(3).ToList();
+        var stats = Stats(now);
 
         var seatList = Seats.Seats;
         // A seat folder on the main profile's account is the same account: one column, its costs and sessions folded in.
@@ -618,15 +586,12 @@ public sealed class AgentUsageService : IDisposable
         if (Directory.Exists(CodexDir)) installed.Add(AgentProvider.Codex);
 
         var limits = new Dictionary<AgentProvider, AgentLimits>();
-        var monthStart = new DateTime(now.Year, now.Month, 1);
-        // Cost inside a window: from its start (reset minus its length) until now.
-        double WindowCost(IEnumerable<AgentRecord> rs, LimitWindow? w, TimeSpan length) =>
-            w?.ResetsAt is { } reset ? rs.Where(r => r.Time >= reset - length).Sum(r => r.Cost ?? 0) : 0;
         var seats = new List<SeatSummary>();
         var sameAs = ClaudeAccounts.Duplicates(seatList.Where(s => !merged.ContainsKey(s.Id)).Select(s => (s.Id, s.AccountId)));
         foreach (var seat in seatList.Where(s => !merged.ContainsKey(s.Id)))
         {
-            var mine = records.Where(r => r.Provider == AgentProvider.Claude && SeatOf(r.Seat) == seat.Id).ToList();
+            // Limit windows are a few hours long and end in the future, so the stats' recent requests cover them.
+            var mine = stats.ClaudeRecent.Where(r => SeatOf(r.Seat) == seat.Id).ToList();
             var folded = seatList.Where(s => merged.TryGetValue(s.Id, out var m) && m == seat.Id).ToList();
             var session = Expire(seat.Session) ?? folded.Select(s => Expire(s.Session)).FirstOrDefault(w => w is not null);
             var weeklyWindow = Expire(seat.Weekly) ?? folded.Select(s => Expire(s.Weekly)).FirstOrDefault(w => w is not null);
@@ -646,8 +611,8 @@ public sealed class AgentUsageService : IDisposable
                 weeklyWindow = app.Weekly is { } aw ? (weeklyWindow is { ResetsAt: { } wr } && weeklyWindow.UsedPercent <= aw.UsedPercent ? aw with { ResetsAt = wr } : aw) : weeklyWindow;
             }
             seats.Add(new SeatSummary(seat.Id, seat.Email, seat.OrgName, seat.PlanName, seat.IsDefault, seat.SignedIn,
-                session, weeklyWindow, WindowCost(mine, session, TimeSpan.FromHours(5)),
-                mine.Where(r => r.Time >= monthStart).Sum(r => r.Cost ?? 0), seat.Error, seat.ConfigDir,
+                session, weeklyWindow, AgentStats.WindowCost(mine, session?.ResetsAt, TimeSpan.FromHours(5)),
+                stats.ClaudeMonthCost.Where(kv => SeatOf(kv.Key) == seat.Id).Sum(kv => kv.Value), seat.Error, seat.ConfigDir,
                 sameAs.TryGetValue(seat.Id, out var first) ? seatList.First(s => s.Id == first).ConfigDir : null));
             if (seat.IsDefault && seat.SignedIn)
                 limits[AgentProvider.Claude] = new AgentLimits(seat.PlanName, seat.PlanMonthly, session, weeklyWindow);
@@ -656,30 +621,30 @@ public sealed class AgentUsageService : IDisposable
         if (_codexLimits is { } cx)
         {
             var plan = _prices.Plan(AgentProvider.Codex, cx.Plan);
-            limits[AgentProvider.Codex] = new AgentLimits(plan?.Name ?? Capitalize(cx.Plan), plan?.Monthly,
+            limits[AgentProvider.Codex] = new AgentLimits(plan?.Name ?? AgentStats.Capitalize(cx.Plan), plan?.Monthly,
                 Expire(cx.Session), Expire(cx.Weekly));
         }
 
         Summary = new AgentSummary
         {
-            Today = Totals(today),
-            Week = Totals(today.AddDays(-6)),
-            Month = Totals(today.AddDays(-29)),
-            AllTime = Totals(DateTime.MinValue),
-            CalendarMonth = records.Where(r => r.Time >= monthStart).GroupBy(r => r.Provider).ToDictionary(g => g.Key, g => g.Sum(r => r.Cost ?? 0)),
+            Today = stats.Today,
+            Week = stats.Week,
+            Month = stats.Month,
+            AllTime = stats.AllTime,
+            CalendarMonth = stats.CalendarMonth,
             CodexSessionCost = limits.TryGetValue(AgentProvider.Codex, out var cxl)
-                ? WindowCost(records.Where(r => r.Provider == AgentProvider.Codex), cxl.Session, TimeSpan.FromHours(5)) : 0,
+                ? AgentStats.WindowCost(stats.CodexRecent, cxl.Session?.ResetsAt, TimeSpan.FromHours(5)) : 0,
             Seats = seats,
-            Daily = daily,
-            Daily30 = daily30,
-            Hourly = hourly,
-            Heatmap = heatmap,
-            AllTimeModels = allTimeModels,
-            TopModels = models,
-            TopProjects = projects,
+            Daily = stats.Daily,
+            Daily30 = stats.Daily30,
+            Hourly = stats.Hourly,
+            Heatmap = stats.Heatmap,
+            AllTimeModels = stats.AllTimeModels,
+            TopModels = stats.TopModels,
+            TopProjects = stats.TopProjects,
             Limits = limits,
             Live = live.OrderBy(l => l.Since).ToList(),
-            LastActivity = records.GroupBy(r => r.Provider).ToDictionary(g => g.Key, g => g.Max(r => r.Time)),
+            LastActivity = stats.LastActivity,
             Installed = installed,
         };
         Updated?.Invoke(Summary);
@@ -744,29 +709,6 @@ public sealed class AgentUsageService : IDisposable
     private static DateTime? ParseDate(string? s) => DateTime.TryParse(s, out var d) ? d.ToLocalTime() : null;
 
     /// "claude-opus-5-5-20260101" → "Opus 5.5", "gpt-6.1-sol" → "GPT-6.1 Sol", as the Mac app names them.
-    public static string ModelDisplay(string model)
-    {
-        var m = model.ToLowerInvariant();
-        var at = m.IndexOfAny(['@', '[']);
-        if (at > 0) m = m[..at];
-        if (m.StartsWith("claude-"))
-        {
-            // Family, then its version numbers joined with dots; dates dropped.
-            var parts = m["claude-".Length..].Split('-').Where(p => !(p.Length >= 8 && p.All(char.IsDigit))).ToList();
-            var words = parts.Where(p => !p.All(char.IsDigit)).Select(Capitalize);
-            var version = string.Join('.', parts.Where(p => p.Length > 0 && p.All(char.IsDigit)));
-            return (string.Join(' ', words) + (version.Length > 0 ? " " + version : "")).Trim();
-        }
-        if (m.StartsWith("gpt-"))
-        {
-            var rest = m[4..].Split('-');
-            return "GPT-" + rest[0] + (rest.Length > 1 ? " " + string.Join(' ', rest[1..].Select(Capitalize)) : "");
-        }
-        return string.Join(' ', m.Split('-').Select(Capitalize));
-    }
-
-    private static string Capitalize(string? s) => string.IsNullOrEmpty(s) ? "" : char.ToUpperInvariant(s[0]) + s[1..];
-
     private static string ProjectName(string? cwd) => AgentLogPaths.ProjectName(cwd);
 
     private static string? Str(JsonElement e, string name) =>

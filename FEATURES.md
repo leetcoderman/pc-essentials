@@ -137,7 +137,7 @@ Windows laptops have no camera notch, so this would be a **floating pill at the 
 | D8 | Queue | Upcoming tracks | 🟡 (Spotify only) | M |
 | D9 | Live equalizer | Animated audio bars | ✅ (WASAPI loopback) | S |
 | D10 | Downloads | Download progress and a file tray | ✅ | S |
-| D11 | AI agents | Usage, limits and token counts for Claude Code, Codex, OpenCode and Copilot, read from local logs in `%USERPROFILE%` | ✅ | M |
+| D11 | AI agents | Claude usage, limits and spend for every Claude account, read from local Claude Code logs in `%USERPROFILE%` and logs synced from other computers | ✅ | M |
 | D12 | Watch | Watch a screen area and alert when it changes | ✅ | S |
 | D13 | Mascot | Animated companion | ✅ | S |
 

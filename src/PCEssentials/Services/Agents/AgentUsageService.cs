@@ -10,61 +10,57 @@ public sealed record LimitWindow(string Label, double UsedPercent, DateTime? Res
 
 public sealed record AgentLimits(string? PlanName, double? PlanMonthly, LimitWindow? Session, LimitWindow? Weekly);
 
-/// A turn in progress. Place is "app" (the Claude or Codex desktop app) or "terminal" (the CLI).
-public sealed record LiveSession(AgentProvider Provider, string Project, DateTime Since, string Place = "terminal", string Seat = "default");
+/// A Claude turn in progress. Place is "app" (the Claude desktop app) or "terminal" (Claude Code).
+public sealed record LiveSession(string Project, DateTime Since, string Place = "terminal", string Seat = "default");
 
 /// One Claude account as the agents page shows it.
 public sealed record SeatSummary(string Id, string? Email, string? OrgName, string? PlanName, bool IsDefault, bool SignedIn,
     LimitWindow? Session, LimitWindow? Weekly, double SessionCost, double MonthCost, string? Error, string ConfigDir,
     string? SameAccountAs = null);
 
+/// Everything is Claude's: this PC's profiles plus the logs synced from other computers.
 public sealed record AgentSummary
 {
-    public Dictionary<AgentProvider, PeriodTotal> Today { get; init; } = new();
-    public Dictionary<AgentProvider, PeriodTotal> Week { get; init; } = new();
-    public Dictionary<AgentProvider, PeriodTotal> Month { get; init; } = new();
+    public PeriodTotal Today { get; init; } = PeriodTotal.Empty;
+    public PeriodTotal Week { get; init; } = PeriodTotal.Empty;
+    public PeriodTotal Month { get; init; } = PeriodTotal.Empty;
     /// Everything in the kept history (all of it).
-    public Dictionary<AgentProvider, PeriodTotal> AllTime { get; init; } = new();
-    /// Cost since the 1st of this month.
-    public Dictionary<AgentProvider, double> CalendarMonth { get; init; } = new();
-    /// Codex's cost inside its current session window.
-    public double CodexSessionCost { get; init; }
+    public PeriodTotal AllTime { get; init; } = PeriodTotal.Empty;
     /// Claude accounts: the usual profile first, then Team seats.
     public List<SeatSummary> Seats { get; init; } = [];
-    /// Cost per provider per day for the last 7 days, oldest first.
-    public List<Dictionary<AgentProvider, double>> Daily { get; init; } = [];
-    /// The same for the last 30 days, and for each hour of today.
-    public List<Dictionary<AgentProvider, double>> Daily30 { get; init; } = [];
-    public List<Dictionary<AgentProvider, double>> Hourly { get; init; } = [];
-    /// Total cost per day for the last 13 weeks (91 days, oldest first), for the activity grid.
-    public List<double> Heatmap { get; init; } = [];
+    /// Cost per day for the last 7 and 30 days (oldest first), and for each hour of today.
+    public List<double> Daily { get; init; } = [];
+    public List<double> Daily30 { get; init; } = [];
+    public List<double> Hourly { get; init; } = [];
+    /// Cost per day for the activity grid: 53 weeks from ActivityFrom (a Sunday) to today.
+    public DateTime ActivityFrom { get; init; }
+    public List<double> Activity { get; init; } = [];
     /// The most valuable models over the whole history.
     public List<RankedRow> AllTimeModels { get; init; } = [];
-    public List<RankedRow> TopModels { get; init; } = [];
-    public List<RankedRow> TopProjects { get; init; } = [];
-    public Dictionary<AgentProvider, AgentLimits> Limits { get; init; } = new();
+    /// The main profile's plan and limits.
+    public AgentLimits? Limits { get; init; }
     public List<LiveSession> Live { get; init; } = [];
-    public Dictionary<AgentProvider, DateTime> LastActivity { get; init; } = new();
-    public HashSet<AgentProvider> Installed { get; init; } = [];
+    public DateTime? LastActivity { get; init; }
+    public bool Installed { get; init; }
 }
 
-public sealed record AgentFinished(AgentProvider Provider, string Project, TimeSpan Duration);
+public sealed record AgentFinished(string Project, TimeSpan Duration);
 
-/// Reads Claude Code and Codex session logs from the home folder, plus any extra log folders in
-/// the settings (logs synced from another computer). Everything is local: no credentials are read
-/// and nothing is sent anywhere. Plan limits come from the caches the CLIs write themselves
-/// (~/.claude.json and the Codex rate-limit events in its logs).
+/// Reads Claude Code session logs from each Claude profile in the home folder, plus any extra log
+/// folders in the settings (logs synced from another computer). Everything is local: no credentials
+/// are read and nothing is sent anywhere. Plan limits come from the caches Claude writes itself
+/// (~/.claude.json) and from the Claude app.
 public sealed class AgentUsageService : IDisposable
 {
     private readonly AppSettings _settings;
     private static readonly string ClaudeDir = Path.Combine(Paths.Home, ".claude");
-    private static readonly string CodexDir = Path.Combine(Paths.Home, ".codex");
     /// History is kept for good: the Spending card shows everything ever recorded on this PC.
     private const int KeepDays = 36500;
 
     private readonly PriceList _prices = PriceList.Load();
     public ClaudeSeatService Seats { get; }
-    public CodexResetService Resets { get; } = new();
+    /// Every record's key starts with this; caches from before only Claude was tracked also hold "codex:" keys.
+    private const string ClaudeKey = "claude:";
     private readonly Dictionary<string, AgentRecord> _records = new();
     /// Bumped on every change to _records (under _gate), so Publish knows when its cached stats are stale.
     private int _recordsVersion;
@@ -72,8 +68,6 @@ public sealed class AgentUsageService : IDisposable
     private int _statsVersion = -1;
     private readonly Dictionary<string, long> _cursors = new();
     private readonly Dictionary<string, (string Status, DateTime Since, string Project, string Place, string Seat)> _claudeSessions = new();
-    private readonly Dictionary<string, CodexFileState> _codexFiles = new();
-    private CodexLimitState? _codexLimits;
     private readonly Timer _scanTimer, _liveTimer, _appWindowTimer;
     private ClaudeAppWindow.Reading? _appWindow;
     /// The account the Claude app is signed in to, and since when (unknown before PC Essentials started).
@@ -112,36 +106,12 @@ public sealed class AgentUsageService : IDisposable
     public event Action<AgentSummary>? Updated;
     public event Action<AgentFinished>? Finished;
 
-    public sealed class CodexFileState
-    {
-        public string Session { get; set; } = "";
-        public string Project { get; set; } = "";
-        public string Model { get; set; } = "";
-        public bool Fast { get; set; }
-        public DateTime? TurnStarted { get; set; }
-        public DateTime LastEvent { get; set; }
-        public bool HasUsageRecords { get; set; }
-        public string Originator { get; set; } = "";
-        /// Read from an extra log folder: another computer's session, never live on this one.
-        public bool Remote { get; set; }
-    }
-
-    public sealed class CodexLimitState
-    {
-        public DateTime At { get; set; }
-        public LimitWindow? Session { get; set; }
-        public LimitWindow? Weekly { get; set; }
-        public string? Plan { get; set; }
-    }
-
     /// Parsed records and how far each log was read, so a restart only reads what is new.
     private sealed class Cache
     {
         public int Version { get; set; } = 1;
         public Dictionary<string, AgentRecord> Records { get; set; } = new();
         public Dictionary<string, long> Cursors { get; set; } = new();
-        public Dictionary<string, CodexFileState> CodexFiles { get; set; } = new();
-        public CodexLimitState? CodexLimits { get; set; }
     }
 
     public AgentUsageService(AppSettings settings)
@@ -171,13 +141,10 @@ public sealed class AgentUsageService : IDisposable
             var cutoff = DateTime.Now.AddDays(-KeepDays);
             foreach (var (seat, dir) in ClaudeLogDirs())
                 foreach (var file in Files(dir, cutoff)) Tail(file, line => ParseClaude(file, line, seat));
-            foreach (var dir in new[] { Path.Combine(CodexDir, "sessions"), Path.Combine(CodexDir, "archived_sessions") })
-                foreach (var file in Files(dir, cutoff)) Tail(file, line => ParseCodex(file, line));
             // Synced logs count toward the usual Claude account, which is assumed to be the one used elsewhere too.
+            // A message read twice (the same log reached two ways) stays one record: records are keyed by message.
             foreach (var dir in ExtraLogDirs())
-                foreach (var file in Files(dir, cutoff))
-                    if (AgentLogPaths.IsCodexLog(file)) Tail(file, line => ParseCodex(file, line, remote: true));
-                    else Tail(file, line => ParseClaude(file, line, "default"));
+                foreach (var file in Files(dir, cutoff)) Tail(file, line => ParseClaude(file, line, "default"));
             lock (_gate)
             {
                 foreach (var key in _records.Where(kv => kv.Value.Time < cutoff).Select(kv => kv.Key).ToList())
@@ -216,15 +183,16 @@ public sealed class AgentUsageService : IDisposable
             {
                 foreach (var (k, v) in cache.Records)
                 {
+                    // Caches written before only Claude was tracked also hold other agents' records.
+                    if (!k.StartsWith(ClaudeKey, StringComparison.Ordinal)) continue;
                     // Prices may have changed since the cache was written.
                     v.Cost = _prices.Cost(v);
                     _records[k] = v;
                 }
                 _recordsVersion++;
             }
-            foreach (var (k, v) in cache.Cursors) _cursors[k] = v;
-            foreach (var (k, v) in cache.CodexFiles) _codexFiles[k] = v;
-            _codexLimits = cache.CodexLimits;
+            foreach (var (k, v) in cache.Cursors)
+                if (AgentLogReader.IsLog(k)) _cursors[k] = v;
             _lastCacheWrite = File.GetLastWriteTime(CachePath);
         }
         catch (Exception ex)
@@ -236,7 +204,6 @@ public sealed class AgentUsageService : IDisposable
                 _recordsVersion++;
             }
             _cursors.Clear();
-            _codexFiles.Clear();
         }
     }
 
@@ -250,8 +217,6 @@ public sealed class AgentUsageService : IDisposable
                 {
                     Records = new(_records),
                     Cursors = new(_cursors),
-                    CodexFiles = _codexFiles.Where(kv => _cursors.ContainsKey(kv.Key)).ToDictionary(),
-                    CodexLimits = _codexLimits,
                 };
             var tmp = CachePath + ".tmp";
             using (var fs = File.Create(tmp)) JsonSerializer.Serialize(fs, cache);
@@ -302,7 +267,7 @@ public sealed class AgentUsageService : IDisposable
         catch { return []; }
     }
 
-    /// Reads only what was added to a log since the last scan (a compressed log, only once).
+    /// Reads only what was added to a log since the last scan .
     private void Tail(string path, Action<ReadOnlyMemory<byte>> onLine)
     {
         try
@@ -330,8 +295,8 @@ public sealed class AgentUsageService : IDisposable
         if (!msg.TryGetProperty("usage", out var u)) return;
 
         var time = DateTime.TryParse(Str(root, "timestamp"), out var t) ? t.ToLocalTime() : File.GetLastWriteTime(file);
-        var key = $"claude:{Str(msg, "id")}:{Str(root, "requestId")}";
-        if (key == "claude::") key = $"claude:{Path.GetFileNameWithoutExtension(file)}:{time.Ticks}";
+        var key = $"{ClaudeKey}{Str(msg, "id")}:{Str(root, "requestId")}";
+        if (key == ClaudeKey + ":") key = $"{ClaudeKey}{Path.GetFileNameWithoutExtension(file)}:{time.Ticks}";
         long longWrite = 0;
         if (u.TryGetProperty("cache_creation", out var cc)) longWrite = Long(cc, "ephemeral_1h_input_tokens");
         int searches = 0;
@@ -339,7 +304,6 @@ public sealed class AgentUsageService : IDisposable
 
         var rec = new AgentRecord
         {
-            Provider = AgentProvider.Claude,
             Time = time,
             Model = model,
             Project = ProjectName(Str(root, "cwd")),
@@ -354,111 +318,6 @@ public sealed class AgentUsageService : IDisposable
             WebSearches = searches,
         };
         Add(key, rec);
-    }
-
-    private void ParseCodex(string file, ReadOnlyMemory<byte> line, bool remote = false)
-    {
-        // Codex logs are dominated by huge response_item lines; decide from the first bytes whether
-        // a line can matter before parsing anything.
-        var head = line.Span[..Math.Min(line.Length, 200)];
-        if (Has(head, "\"type\":\"event_msg\""u8))
-        {
-            if (!Has(head, "\"token_count\""u8) && !Has(head, "\"task_started\""u8) && !Has(head, "\"task_complete\""u8)
-                && !Has(head, "\"turn_aborted\""u8)) return;
-        }
-        else if (!Has(head, "\"session_meta\""u8) && !Has(head, "\"turn_context\""u8) && !Has(head, "\"token_usage_record\""u8))
-            return;
-        if (!_codexFiles.TryGetValue(file, out var st)) _codexFiles[file] = st = new CodexFileState { Session = Path.GetFileName(file).Split('.')[0], Remote = remote };
-        using var doc = JsonDocument.Parse(line);
-        var root = doc.RootElement;
-        var type = Str(root, "type");
-        if (!root.TryGetProperty("payload", out var p)) return;
-        var time = DateTime.TryParse(Str(root, "timestamp"), out var t) ? t.ToLocalTime() : DateTime.Now;
-        st.LastEvent = time;
-
-        switch (type)
-        {
-            case "session_meta":
-                if (st.Project.Length == 0)
-                {
-                    st.Session = Str(p, "id") ?? st.Session;
-                    st.Project = ProjectName(Str(p, "cwd"));
-                    st.Originator = Str(p, "originator") ?? "";
-                }
-                break;
-            case "turn_context":
-                st.Model = Str(p, "model") ?? st.Model;
-                var tier = Str(p, "service_tier");
-                st.Fast = tier is "fast" or "priority";
-                if (Str(p, "cwd") is { } cwd) st.Project = ProjectName(cwd);
-                break;
-            case "token_usage_record":
-                if (p.TryGetProperty("usage", out var usage))
-                {
-                    st.HasUsageRecords = true;
-                    AddCodex($"codex:{Str(p, "response_id")}", usage, st, time);
-                }
-                break;
-            case "event_msg":
-                switch (Str(p, "type"))
-                {
-                    case "task_started": st.TurnStarted = time; break;
-                    case "task_complete" or "turn_aborted":
-                        if (st.TurnStarted is { } started && !st.Remote && Str(p, "type") == "task_complete")
-                            MaybeFinished(AgentProvider.Codex, st.Project, time - started, time);
-                        st.TurnStarted = null;
-                        break;
-                    case "token_count":
-                        if (p.TryGetProperty("info", out var info) && info.ValueKind == JsonValueKind.Object && !st.HasUsageRecords
-                            && info.TryGetProperty("last_token_usage", out var last) && info.TryGetProperty("total_token_usage", out var total))
-                            AddCodex($"codex:{st.Session}:total:{Long(total, "total_tokens")}", last, st, time);
-                        if (p.TryGetProperty("rate_limits", out var rl) && rl.ValueKind == JsonValueKind.Object)
-                            ReadCodexLimits(rl, time);
-                        break;
-                }
-                break;
-        }
-    }
-
-    private void AddCodex(string key, JsonElement u, CodexFileState st, DateTime time)
-    {
-        var input = Long(u, "input_tokens");
-        var cacheRead = Math.Min(input, Long(u, "cached_input_tokens"));
-        var cacheWrite = Math.Min(input - cacheRead, Long(u, "cache_write_input_tokens"));
-        Add(key, new AgentRecord
-        {
-            Provider = AgentProvider.Codex,
-            Time = time,
-            Model = st.Model.Length > 0 ? st.Model : "codex",
-            Project = st.Project,
-            Input = input - cacheRead - cacheWrite,
-            CacheRead = cacheRead,
-            CacheWrite = cacheWrite,
-            Output = Long(u, "output_tokens"),
-            Fast = st.Fast,
-        });
-    }
-
-    private void ReadCodexLimits(JsonElement rl, DateTime time)
-    {
-        var id = Str(rl, "limit_id");
-        if (!string.IsNullOrEmpty(id) && id != "codex") return;
-        if (_codexLimits is { } existing && existing.At > time) return;
-        LimitWindow? session = null, weekly = null;
-        foreach (var slot in new[] { "primary", "secondary" })
-        {
-            if (!rl.TryGetProperty(slot, out var w) || w.ValueKind != JsonValueKind.Object) continue;
-            var minutes = Dbl(w, "window_minutes");
-            DateTime? resets = null;
-            if (w.TryGetProperty("resets_at", out var ra) && ra.ValueKind == JsonValueKind.Number)
-                resets = DateTimeOffset.FromUnixTimeSeconds(ra.GetInt64()).LocalDateTime;
-            else if (w.TryGetProperty("resets_in_seconds", out var rin) && rin.ValueKind == JsonValueKind.Number)
-                resets = time.AddSeconds(rin.GetDouble());
-            var window = new LimitWindow(minutes <= 720 ? "Session" : "Weekly", Dbl(w, "used_percent"), resets);
-            if (minutes <= 720) session = window;
-            else if (minutes is >= 6 * 1440 and <= 8 * 1440) weekly = window;
-        }
-        _codexLimits = new CodexLimitState { At = time, Session = session, Weekly = weekly, Plan = Str(rl, "plan_type") };
     }
 
     private void Add(string key, AgentRecord rec)
@@ -513,7 +372,7 @@ public sealed class AgentUsageService : IDisposable
                         if (_claudeSessions.TryGetValue(id, out var prev))
                         {
                             if (prev.Status == "busy" && status != "busy")
-                                MaybeFinished(AgentProvider.Claude, project, DateTime.Now - prev.Since, DateTime.Now);
+                                MaybeFinished(project, DateTime.Now - prev.Since, DateTime.Now);
                             if (prev.Status != status) changed = true;
                             if (prev.Status == status) since = prev.Since;
                         }
@@ -535,11 +394,11 @@ public sealed class AgentUsageService : IDisposable
         finally { Monitor.Exit(_stateGate); }
     }
 
-    private void MaybeFinished(AgentProvider provider, string project, TimeSpan duration, DateTime at)
+    private void MaybeFinished(string project, TimeSpan duration, DateTime at)
     {
         // Only report fresh endings of tasks long enough to have walked away from.
         if (DateTime.Now - at > TimeSpan.FromMinutes(5) || duration < TimeSpan.FromSeconds(60)) return;
-        Finished?.Invoke(new AgentFinished(provider, project, duration));
+        Finished?.Invoke(new AgentFinished(project, duration));
     }
 
     private static bool ProcessAlive(int pid)
@@ -575,23 +434,15 @@ public sealed class AgentUsageService : IDisposable
 
         var live = new List<LiveSession>();
         foreach (var s in _claudeSessions.Values.Where(s => s.Status == "busy"))
-            live.Add(new LiveSession(AgentProvider.Claude, s.Project, s.Since, s.Place, SeatOf(s.Seat)));
-        foreach (var st in _codexFiles.Values)
-            if (st.TurnStarted is { } started && !st.Remote && now - st.LastEvent < TimeSpan.FromMinutes(10))
-                live.Add(new LiveSession(AgentProvider.Codex, st.Project, started,
-                    st.Originator.Contains("desktop", StringComparison.OrdinalIgnoreCase) ? "app" : "terminal"));
+            live.Add(new LiveSession(s.Project, s.Since, s.Place, SeatOf(s.Seat)));
 
-        var installed = new HashSet<AgentProvider>();
-        if (Directory.Exists(ClaudeDir)) installed.Add(AgentProvider.Claude);
-        if (Directory.Exists(CodexDir)) installed.Add(AgentProvider.Codex);
-
-        var limits = new Dictionary<AgentProvider, AgentLimits>();
+        AgentLimits? limits = null;
         var seats = new List<SeatSummary>();
         var sameAs = ClaudeAccounts.Duplicates(seatList.Where(s => !merged.ContainsKey(s.Id)).Select(s => (s.Id, s.AccountId)));
         foreach (var seat in seatList.Where(s => !merged.ContainsKey(s.Id)))
         {
             // Limit windows are a few hours long and end in the future, so the stats' recent requests cover them.
-            var mine = stats.ClaudeRecent.Where(r => SeatOf(r.Seat) == seat.Id).ToList();
+            var mine = stats.Recent.Where(r => SeatOf(r.Seat) == seat.Id).ToList();
             var folded = seatList.Where(s => merged.TryGetValue(s.Id, out var m) && m == seat.Id).ToList();
             var session = Expire(seat.Session) ?? folded.Select(s => Expire(s.Session)).FirstOrDefault(w => w is not null);
             var weeklyWindow = Expire(seat.Weekly) ?? folded.Select(s => Expire(s.Weekly)).FirstOrDefault(w => w is not null);
@@ -612,18 +463,12 @@ public sealed class AgentUsageService : IDisposable
             }
             seats.Add(new SeatSummary(seat.Id, seat.Email, seat.OrgName, seat.PlanName, seat.IsDefault, seat.SignedIn,
                 session, weeklyWindow, AgentStats.WindowCost(mine, session?.ResetsAt, TimeSpan.FromHours(5)),
-                stats.ClaudeMonthCost.Where(kv => SeatOf(kv.Key) == seat.Id).Sum(kv => kv.Value), seat.Error, seat.ConfigDir,
+                stats.SeatMonthCost.Where(kv => SeatOf(kv.Key) == seat.Id).Sum(kv => kv.Value), seat.Error, seat.ConfigDir,
                 sameAs.TryGetValue(seat.Id, out var first) ? seatList.First(s => s.Id == first).ConfigDir : null));
             if (seat.IsDefault && seat.SignedIn)
-                limits[AgentProvider.Claude] = new AgentLimits(seat.PlanName, seat.PlanMonthly, session, weeklyWindow);
+                limits = new AgentLimits(seat.PlanName, seat.PlanMonthly, session, weeklyWindow);
         }
-        if (!limits.ContainsKey(AgentProvider.Claude) && ReadClaudeLimits() is { } cl) limits[AgentProvider.Claude] = cl;
-        if (_codexLimits is { } cx)
-        {
-            var plan = _prices.Plan(AgentProvider.Codex, cx.Plan);
-            limits[AgentProvider.Codex] = new AgentLimits(plan?.Name ?? AgentStats.Capitalize(cx.Plan), plan?.Monthly,
-                Expire(cx.Session), Expire(cx.Weekly));
-        }
+        limits ??= ReadClaudeLimits();
 
         Summary = new AgentSummary
         {
@@ -631,21 +476,17 @@ public sealed class AgentUsageService : IDisposable
             Week = stats.Week,
             Month = stats.Month,
             AllTime = stats.AllTime,
-            CalendarMonth = stats.CalendarMonth,
-            CodexSessionCost = limits.TryGetValue(AgentProvider.Codex, out var cxl)
-                ? AgentStats.WindowCost(stats.CodexRecent, cxl.Session?.ResetsAt, TimeSpan.FromHours(5)) : 0,
             Seats = seats,
             Daily = stats.Daily,
             Daily30 = stats.Daily30,
             Hourly = stats.Hourly,
-            Heatmap = stats.Heatmap,
+            ActivityFrom = stats.ActivityFrom,
+            Activity = stats.Activity,
             AllTimeModels = stats.AllTimeModels,
-            TopModels = stats.TopModels,
-            TopProjects = stats.TopProjects,
             Limits = limits,
             Live = live.OrderBy(l => l.Since).ToList(),
             LastActivity = stats.LastActivity,
-            Installed = installed,
+            Installed = Directory.Exists(ClaudeDir),
         };
         Updated?.Invoke(Summary);
     }
@@ -666,9 +507,9 @@ public sealed class AgentUsageService : IDisposable
             double? monthly = null;
             if (root.TryGetProperty("oauthAccount", out var acct))
             {
-                var plan = _prices.Plan(AgentProvider.Claude, Str(acct, "userRateLimitTier"))
-                        ?? _prices.Plan(AgentProvider.Claude, Str(acct, "organizationRateLimitTier"))
-                        ?? _prices.Plan(AgentProvider.Claude, Str(acct, "organizationType"));
+                var plan = _prices.Plan(Str(acct, "userRateLimitTier"))
+                        ?? _prices.Plan(Str(acct, "organizationRateLimitTier"))
+                        ?? _prices.Plan(Str(acct, "organizationType"));
                 planName = plan?.Name;
                 monthly = plan?.Monthly;
             }
@@ -708,7 +549,6 @@ public sealed class AgentUsageService : IDisposable
 
     private static DateTime? ParseDate(string? s) => DateTime.TryParse(s, out var d) ? d.ToLocalTime() : null;
 
-    /// "claude-opus-5-5-20260101" → "Opus 5.5", "gpt-6.1-sol" → "GPT-6.1 Sol", as the Mac app names them.
     private static string ProjectName(string? cwd) => AgentLogPaths.ProjectName(cwd);
 
     private static string? Str(JsonElement e, string name) =>
@@ -726,7 +566,6 @@ public sealed class AgentUsageService : IDisposable
         _liveTimer.Dispose();
         _appWindowTimer.Dispose();
         Seats.Dispose();
-        Resets.Dispose();
         lock (_stateGate) if (_dirty) SaveCache();
     }
 }

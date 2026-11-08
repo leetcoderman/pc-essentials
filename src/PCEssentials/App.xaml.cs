@@ -40,8 +40,11 @@ public partial class App : System.Windows.Application
     /// creating quit.request in %APPDATA%\PCEssentials or next to the exe quits within a second. The exe
     /// folder matters for tools running inside a packaged (MSIX) app such as the Claude desktop app: Windows
     /// redirects their %APPDATA% writes into the package's own copy, which this app never sees.
-    private static readonly string[] QuitRequests =
-        [System.IO.Path.Combine(Paths.DataDir, "quit.request"), System.IO.Path.Combine(AppContext.BaseDirectory, "quit.request")];
+    private static readonly string[] QuitRequests = RequestPaths("quit.request");
+    private static readonly string[] IslandRequests = RequestPaths("island.request");
+
+    private static string[] RequestPaths(string name) =>
+        [System.IO.Path.Combine(Paths.DataDir, name), System.IO.Path.Combine(AppContext.BaseDirectory, name)];
 
     /// Watches for request files from scripts: quit.request and island.request.
     private void StartRequestWatch()
@@ -51,8 +54,7 @@ public partial class App : System.Windows.Application
         quitWatch.Tick += (_, _) =>
         {
             // island.request opens the island on the page named inside it (e.g. "agents").
-            var islandRequest = System.IO.Path.Combine(Paths.DataDir, "island.request");
-            if (System.IO.File.Exists(islandRequest))
+            if (IslandRequests.FirstOrDefault(System.IO.File.Exists) is { } islandRequest)
             {
                 string page = "";
                 try { page = System.IO.File.ReadAllText(islandRequest).Trim(); System.IO.File.Delete(islandRequest); } catch { }
@@ -141,7 +143,7 @@ public partial class App : System.Windows.Application
             new("Scratchpad", "Open the island's notes", Ui.GNote, () => _island.Open("scratchpad"), "notes", "scratchpad"),
             new("Keep awake", "Open the island's keep awake page", Ui.GCoffee, () => _island.Open("keepAwake"), "caffeine", "awake", "no sleep"),
             new("Volume mixer", "Open the island's mixer", Ui.GMixer, () => _island.Open("mixer"), "volume", "mixer"),
-            new("AI agent limits", "Claude and Codex usage", Ui.GRobot, () => _island.Open("agents"), "claude", "codex", "agents", "limits"),
+            new("AI agent limits", "Claude usage and limits", Ui.GRobot, () => _island.Open("agents"), "claude", "agents", "limits"),
         ]);
         StartRequestWatch();
         BindShortcuts();

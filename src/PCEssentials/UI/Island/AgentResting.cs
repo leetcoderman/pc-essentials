@@ -7,19 +7,18 @@ using PCEssentials.Services.Agents;
 
 namespace PCEssentials.UI.Island;
 
-/// One agent at rest: the limit window it shows.
-public sealed record RestingMeter(AgentProvider Provider, LimitWindow Window, bool IsWeekly)
+/// Claude at rest: the limit window it shows.
+public sealed record RestingMeter(LimitWindow Window, bool IsWeekly)
 {
     public double UsedFraction => Math.Clamp(Window.UsedPercent / 100, 0, 1);
     public double RemainingFraction => 1 - UsedFraction;
 }
 
-/// The resting island's AI limits, ported from the Mac app's NotchAgentSupport (resting meters):
-/// which window each agent rests on, and what each layout shows in which order.
+/// The resting island's Claude limits, ported from the Mac app's NotchAgentSupport (resting meters):
+/// which window each account rests on, and what each layout shows in which order.
 public static class AgentResting
 {
     public static readonly Color ResetTeal = Ui.C("#40C8E0");
-    private static readonly AgentProvider[] Order = [AgentProvider.Claude, AgentProvider.Codex];
 
     /// Green while there is room, yellow from 80% used, red from 95% (restingStatus).
     public static int Status(double usedFraction) => usedFraction >= 0.95 ? 2 : usedFraction >= 0.8 ? 1 : 0;
@@ -50,24 +49,23 @@ public static class AgentResting
         return all.OrderByDescending(x => x.Window.UsedPercent).ThenByDescending(x => x.Window.ResetsAt ?? DateTime.MinValue).First();
     }
 
-    /// Every agent that rests, in order: not left out, and reporting a window.
-    private static List<RestingMeter> Meters(AgentSummary s, IslandSettings cfg)
+    /// Every signed-in account reporting a window, in the agents card's order (the main profile's
+    /// plan-wide limits when no account is known yet).
+    private static List<RestingMeter> Meters(AgentSummary s, IslandSettings cfg, IList<string> seatOrder)
     {
         var list = new List<RestingMeter>();
-        foreach (var p in Order)
-        {
-            if (cfg.AgentsRestingHidden.Contains(p.ToString())) continue;
-            s.Limits.TryGetValue(p, out var limits);
-            if (RestingWindow(limits, cfg.AgentsLimitFocus) is { } pick) list.Add(new RestingMeter(p, pick.Window, pick.Weekly));
-        }
+        foreach (var seat in ClaudeAccounts.Ordered(s.Seats.Where(x => x.SignedIn), x => x.Email, seatOrder))
+            if (RestingWindow(new AgentLimits(null, null, seat.Session, seat.Weekly), cfg.AgentsLimitFocus) is { } pick)
+                list.Add(new RestingMeter(pick.Window, pick.Weekly));
+        if (list.Count == 0 && RestingWindow(s.Limits, cfg.AgentsLimitFocus) is { } main) list.Add(new RestingMeter(main.Window, main.Weekly));
         return list;
     }
 
     /// What a layout shows, in its order: Single's one meter (the limit closest to stopping you),
     /// the first two for One per side, and for Rotate the tightest first, then the rest in order.
-    public static List<RestingMeter> Sequence(AgentSummary s, IslandSettings cfg)
+    public static List<RestingMeter> Sequence(AgentSummary s, IslandSettings cfg, IList<string> seatOrder)
     {
-        var meters = Meters(s, cfg);
+        var meters = Meters(s, cfg, seatOrder);
         switch (cfg.AgentsRestingLayout)
         {
             case "split":
@@ -85,14 +83,12 @@ public static class AgentResting
                 // Across agents: the chosen kind when anyone reports it, else each one's binding window.
                 var chosen = meters.Where(m => cfg.AgentsLimitFocus == "mostUsed" || m.IsWeekly == (cfg.AgentsLimitFocus == "weekly")).ToList();
                 var pool = chosen.Count > 0 ? chosen : meters;
-                return pool.OrderByDescending(m => m.Window.UsedPercent).ThenBy(m => Array.IndexOf(Order, m.Provider)).Take(1).ToList();
+                return pool.OrderByDescending(m => m.Window.UsedPercent).Take(1).ToList();
         }
     }
 
-    /// The agent whose mark stands in while none reports a limit: the first seen, unless left out.
-    public static AgentProvider? Fallback(AgentSummary s, IslandSettings cfg) =>
-        Order.Where(p => (s.Installed.Contains(p) || s.LastActivity.ContainsKey(p)) && !cfg.AgentsRestingHidden.Contains(p.ToString()))
-             .Cast<AgentProvider?>().FirstOrDefault();
+    /// Claude's mark and today's spend stand in while no account reports a limit, once Claude has been used here.
+    private static bool Fallback(AgentSummary s) => s.Installed || s.LastActivity is not null;
 
     /// Rotate's place in its sequence; every 4 seconds.
     public static int CycleIndex(int count) =>
@@ -125,15 +121,14 @@ public static class AgentResting
     {
         if (cfg.AgentsRestingLayout == "all") return AllRow(s, cfg, seatOrder, out key);
         var used = cfg.AgentsLimitDisplay == "used";
-        var meters = Sequence(s, cfg);
+        var meters = Sequence(s, cfg, seatOrder);
         if (meters.Count == 0)
         {
             key = "fallback";
-            if (Fallback(s, cfg) is not { } p) return null;
-            s.Today.TryGetValue(p, out var today);
-            var cost = today?.Cost ?? 0;
+            if (!Fallback(s)) return null;
+            var cost = s.Today.Cost;
             var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-            row.Children.Add(new Border { Width = 16, Child = Glyph(p, 11) });
+            row.Children.Add(new Border { Width = 16, Child = Glyph(11) });
             var t = Ui.Text(Ui.Money(cost), 12, FontWeights.SemiBold, 1, SpendTint(cost));
             Typography.SetNumeralAlignment(t, FontNumeralAlignment.Tabular);
             t.Margin = new Thickness(5, 0, 0, 0);
@@ -142,7 +137,7 @@ public static class AgentResting
         }
         if (cfg.AgentsRestingLayout == "split" && meters.Count > 1)
         {
-            key = "split:" + string.Join("|", meters.Select(m => $"{m.Provider}{m.Window.UsedPercent:0}{m.Window.ResetsAt}"));
+            key = "split:" + string.Join("|", meters.Select(m => $"{m.Window.UsedPercent:0}{m.Window.ResetsAt}"));
             var both = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             var first = One(meters[0], used);
             var second = One(meters[1], used);
@@ -153,32 +148,28 @@ public static class AgentResting
         }
         var index = cfg.AgentsRestingLayout == "cycle" ? CycleIndex(meters.Count) : 0;
         var m = meters[index];
-        key = $"one:{m.Provider}{m.Window.UsedPercent:0}{m.Window.ResetsAt}{used}";
+        key = $"one:{m.Window.UsedPercent:0}{m.Window.ResetsAt}{used}";
         return One(m, used);
     }
 
-    /// Every signed-in account side by side: each Claude seat in the agents card's order, then Codex.
-    /// An account shows its window closest to running out: a ring in the agent's colour filled to the
+    /// Every signed-in account side by side, in the agents card's order.
+    /// An account shows its window closest to running out: a ring in Claude's colour filled to the
     /// used share (yellow from 80%, red from 95%), the percent used, and under it its name and when that
     /// window renews, so the Claude rings can be told apart.
     private static FrameworkElement? AllRow(AgentSummary s, IslandSettings cfg, IList<string> seatOrder, out string key)
     {
         var items = new List<(RestingMeter Meter, string? Name, string Tip)>();
-        var seats = cfg.AgentsRestingHidden.Contains("Claude") ? [] : ClaudeAccounts.Ordered(s.Seats.Where(x => x.SignedIn), x => x.Email, seatOrder);
-        foreach (var seat in seats)
+        foreach (var seat in ClaudeAccounts.Ordered(s.Seats.Where(x => x.SignedIn), x => x.Email, seatOrder))
         {
             if (Tightest(seat.Session, seat.Weekly) is not { } pick) continue;
-            items.Add((new RestingMeter(AgentProvider.Claude, pick.Window, pick.Weekly), seat.Email?.Split('@')[0], Tip("Claude", seat.Email, seat.Session, seat.Weekly)));
+            items.Add((new RestingMeter(pick.Window, pick.Weekly), seat.Email?.Split('@')[0], Tip(seat.Email, seat.Session, seat.Weekly)));
         }
-        if (!cfg.AgentsRestingHidden.Contains("Codex") && s.Limits.TryGetValue(AgentProvider.Codex, out var codex)
-            && Tightest(codex.Session, codex.Weekly) is { } cp)
-            items.Add((new RestingMeter(AgentProvider.Codex, cp.Window, cp.Weekly), "codex", Tip("Codex", codex.PlanName, codex.Session, codex.Weekly)));
         if (items.Count == 0)
         {
             key = "none";
             return null;
         }
-        key = "all:" + string.Join("|", items.Select(i => $"{i.Meter.Provider}{i.Name}{i.Meter.Window.UsedPercent:0}{i.Meter.Window.ResetsAt:HHmm}{i.Meter.IsWeekly}"));
+        key = "all:" + string.Join("|", items.Select(i => $"{i.Name}{i.Meter.Window.UsedPercent:0}{i.Meter.Window.ResetsAt:HHmm}{i.Meter.IsWeekly}"));
         var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         for (var i = 0; i < items.Count; i++)
         {
@@ -195,10 +186,10 @@ public static class AgentResting
         return (session!, false);
     }
 
-    private static string Tip(string agent, string? who, LimitWindow? session, LimitWindow? weekly)
+    private static string Tip(string? who, LimitWindow? session, LimitWindow? weekly)
     {
         string Line(LimitWindow w) => $"{w.Label}: {w.UsedPercent:0}% used" + (w.ResetsAt is { } r ? $", resets {(w.Estimated ? "≈" : "")}{r:ddd HH:mm}" : "");
-        var lines = new List<string> { agent + (who is { Length: > 0 } ? " · " + who : "") };
+        var lines = new List<string> { "Claude" + (who is { Length: > 0 } ? " · " + who : "") };
         if (session is not null) lines.Add(Line(session));
         if (weekly is not null) lines.Add(Line(weekly));
         return string.Join("\n", lines);
@@ -206,8 +197,7 @@ public static class AgentResting
 
     private static FrameworkElement Account(RestingMeter m, string? name, string tip)
     {
-        var tint = AgentsPage.TintOf(m.Provider);
-        var gauge = new RestingGauge(m, true, 20, tint);
+        var gauge = new RestingGauge(m, true, 20, Ui.Clay);
         var pct = new TextBlock { FontFamily = Ui.Display, FontWeight = FontWeights.SemiBold, FontSize = 12.5, Foreground = Ui.B(Ink(m.UsedFraction, 0.95)), LineHeight = 13, LineStackingStrategy = LineStackingStrategy.BlockLineHeight };
         Typography.SetNumeralAlignment(pct, FontNumeralAlignment.Tabular);
         pct.Inlines.Add(new Run($"{m.Window.UsedPercent:0}"));
@@ -245,25 +235,25 @@ public static class AgentResting
             row.Children.Add(time);
         }
         var label = used ? "used" : "left";
-        row.ToolTip = $"{AgentsPage.NameOf(m.Provider)} · {(m.IsWeekly ? "Weekly" : "Session")}: {Math.Round(fraction * 100):0}% {label}" +
+        row.ToolTip = $"Claude · {(m.IsWeekly ? "Weekly" : "Session")}: {Math.Round(fraction * 100):0}% {label}" +
                       (m.Window.ResetsAt is { } r ? $", resets {r:ddd HH:mm}" : "");
         return row;
     }
 
-    /// The agent's mark without its tile, as drawn inside the ring.
-    public static TextBlock Glyph(AgentProvider p, double size) => new()
+    /// Claude's mark without its tile, as drawn inside the ring.
+    public static TextBlock Glyph(double size) => new()
     {
-        Text = p == AgentProvider.Claude ? "✻" : ">_",
-        FontFamily = p == AgentProvider.Claude ? new FontFamily("Segoe UI Symbol") : Ui.Mono,
+        Text = "✻",
+        FontFamily = new FontFamily("Segoe UI Symbol"),
         FontWeight = FontWeights.Bold,
-        FontSize = p == AgentProvider.Claude ? size * 1.05 : size * 0.75,
-        Foreground = Ui.B(AgentsPage.TintOf(p)),
+        FontSize = size * 1.05,
+        Foreground = Ui.B(Ui.Clay),
         HorizontalAlignment = HorizontalAlignment.Center,
         VerticalAlignment = VerticalAlignment.Center,
     };
 }
 
-/// One agent at rest: its mark inside the ring of the limit it shows, filled as the person reads
+/// Claude at rest: its mark inside the ring of the limit it shows, filled as the person reads
 /// limits (used or left). Port of NotchAgentRestingGauge.
 public sealed class RestingGauge : Grid
 {
@@ -272,7 +262,7 @@ public sealed class RestingGauge : Grid
     private readonly double _ring;
     private readonly Color? _fill;
 
-    /// fill: the ring's colour while the window has room (the agent's colour); null keeps the
+    /// fill: the ring's colour while the window has room (Claude's colour); null keeps the
     /// Mac's white. Yellow and red always win once the window runs low.
     public RestingGauge(RestingMeter meter, bool used, double ring, Color? fill = null)
     {
@@ -283,7 +273,7 @@ public sealed class RestingGauge : Grid
         Width = ring;
         Height = ring;
         VerticalAlignment = VerticalAlignment.Center;
-        Children.Add(AgentResting.Glyph(meter.Provider, ring * (ring < 22 ? 0.6 : 0.48)));
+        Children.Add(AgentResting.Glyph(ring * (ring < 22 ? 0.6 : 0.48)));
     }
 
     protected override void OnRender(DrawingContext dc)

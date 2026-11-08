@@ -18,7 +18,7 @@ public static class Ui
 
     public static readonly Color Clay = C("#D97757"), Amber = C("#FFB224"), Rose = C("#FF375F"), Purple = C("#BF5AF2"),
         Red = C("#FF453A"), Tan = C("#D4A373"), Yellow = C("#FFD60A"), Green = C("#30D158"), Blue = C("#0A84FF"),
-        Orange = C("#FF9F0A"), Gray = C("#98989D"), AwakeOn = C("#FF546B"), Codex = C("#7D99FF"), Mint = C("#63E6E2");
+        Orange = C("#FF9F0A"), Gray = C("#98989D"), AwakeOn = C("#FF546B"), Mint = C("#63E6E2");
 
     // Segoe Fluent Icons code points.
     public const string GSettings = "", GPower = "", GPlay = "", GPause = "", GPrev = "",

@@ -1,7 +1,6 @@
 using System.Text;
 using PCEssentials.Services.Agents;
 using Xunit;
-using ZstdSharp;
 
 namespace PCEssentials.Tests;
 
@@ -18,22 +17,16 @@ public sealed class AgentLogReaderTests : IDisposable
         return lines;
     }
 
-    private string Compressed(string name, string text)
-    {
-        var path = Path.Combine(_dir, name);
-        using var compressor = new Compressor();
-        File.WriteAllBytes(path, compressor.Wrap(Encoding.UTF8.GetBytes(text)).ToArray());
-        return path;
-    }
-
     [Theory]
-    [InlineData("rollout-1.jsonl", true)]
-    [InlineData("rollout-1.jsonl.zst", true)]
-    [InlineData("ROLLOUT-1.JSONL.ZST", true)]
+    [InlineData("0b6f3c1e-8d2a.jsonl", true)]
+    [InlineData("0B6F3C1E.JSONL", true)]
+    [InlineData(@"C:\Users\me\AgentLogs\mac-claude-projects\-Users-me-code-rollout-tool\0b6f3c1e.jsonl", true)]
+    [InlineData(@"C:\Users\me\AgentLogs\mac-codex-sessions\2026\10\29\rollout-2026-10-29T22-11-39-01a1.jsonl", false)]
+    [InlineData("/Users/me/.codex/archived_sessions/rollout-2026-10-29T22-11-39-01a1.jsonl", false)]
+    [InlineData("rollout-1.jsonl.zst", false)]
     [InlineData("photo.jpg", false)]
     [InlineData("notes.json", false)]
-    [InlineData("rollout-1.zst", false)]
-    public void IsLog(string name, bool expected) => Assert.Equal(expected, AgentLogReader.IsLog(name));
+    public void IsLog(string path, bool expected) => Assert.Equal(expected, AgentLogReader.IsLog(path));
 
     [Fact]
     public void PlainLogIsReadFromWhereItStopped()
@@ -62,42 +55,6 @@ public sealed class AgentLogReaderTests : IDisposable
 
         File.WriteAllText(path, "new\n");
         Assert.Equal(["new"], Read(reader, path, ref offset));
-    }
-
-    [Fact]
-    public void CompressedLogIsReadWholeOnce()
-    {
-        var path = Compressed("rollout-1.jsonl.zst", "one\ntwo\nlast without newline");
-        var reader = new AgentLogReader();
-        long offset = 0;
-
-        Assert.Equal(["one", "two", "last without newline"], Read(reader, path, ref offset));
-        Assert.Equal(new FileInfo(path).Length, offset);
-        Assert.Empty(Read(reader, path, ref offset));
-    }
-
-    [Fact]
-    public void ReplacedCompressedLogIsReadAgainFromTheStart()
-    {
-        var path = Compressed("rollout-1.jsonl.zst", "one\n");
-        var reader = new AgentLogReader();
-        long offset = 0;
-        Read(reader, path, ref offset);
-
-        Compressed("rollout-1.jsonl.zst", "one\ntwo\nthree\n");
-        Assert.Equal(["one", "two", "three"], Read(reader, path, ref offset));
-    }
-
-    [Fact]
-    public void DamagedCompressedLogIsSkipped()
-    {
-        var path = Path.Combine(_dir, "rollout-1.jsonl.zst");
-        File.WriteAllBytes(path, Encoding.UTF8.GetBytes("not zstd at all\n"));
-        var reader = new AgentLogReader();
-        long offset = 0;
-
-        Assert.Empty(Read(reader, path, ref offset));
-        Assert.Equal(new FileInfo(path).Length, offset);
     }
 
     [Fact]

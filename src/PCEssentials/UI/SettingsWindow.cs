@@ -231,19 +231,12 @@ public sealed partial class SettingsWindow : Window
         p.Children.Add(Check("Show keep awake time left in the closed island", i.ShowKeepAwakeInCapsule, v => { i.ShowKeepAwakeInCapsule = v; Changed(); }));
 
         p.Children.Add(Heading("At rest"));
-        p.Children.Add(Note("What the closed island shows when nothing else is happening. With AI agents, each agent rests as its mark inside a ring of the limit it shows, " +
+        p.Children.Add(Note("What the closed island shows when nothing else is happening. With AI agents, each Claude account rests as Claude's mark inside a ring of the limit it shows, " +
                             "with the number and when it renews. Rings and numbers turn yellow at 80% used and red at 95%. \"Limit to show\" picks every number's limit."));
         p.Children.Add(Labeled("Show", Choice(i.IdleContent, [("agents", "AI agents' limits"), ("music", "Music"), ("none", "Nothing")], v => i.IdleContent = v)));
         p.Children.Add(Labeled("Layout", Choice(i.AgentsRestingLayout, [("all", "Every signed-in account side by side"), ("single", "Single (the limit closest to running out)"), ("split", "One per side"), ("cycle", "Rotate every 4 seconds")], v => i.AgentsRestingLayout = v)));
         p.Children.Add(Labeled("Limits read as", Choice(i.AgentsLimitDisplay, [("remaining", "What's left"), ("used", "What's used")], v => i.AgentsLimitDisplay = v)));
         p.Children.Add(Labeled("Limit to show", Choice(i.AgentsLimitFocus, [("mostUsed", "Most used"), ("session", "Session"), ("weekly", "Weekly")], v => i.AgentsLimitFocus = v)));
-        foreach (var agent in new[] { "Claude", "Codex" })
-            p.Children.Add(Check($"Show {agent} at rest", !i.AgentsRestingHidden.Contains(agent), v =>
-            {
-                i.AgentsRestingHidden.Remove(agent);
-                if (!v) i.AgentsRestingHidden.Add(agent);
-                Changed();
-            }));
 
         p.Children.Add(Heading("Sections"));
         p.Children.Add(Note("Choose the island's pages and their order in its top bar. Settings and Quit always end the bar."));

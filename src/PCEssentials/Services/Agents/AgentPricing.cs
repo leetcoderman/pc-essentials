@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace PCEssentials.Services.Agents;
 
-/// USD per million tokens, from the Mac app's agent-prices.json (embedded).
+/// USD per million tokens for Claude models, from agent-prices.json (embedded, shared with the Mac app).
 public sealed class ModelPrice
 {
     public string Id { get; set; } = "";
@@ -41,10 +41,6 @@ public sealed class ProviderPrices
 public sealed class PriceList
 {
     public ProviderPrices Claude { get; set; } = new();
-    public ProviderPrices Codex { get; set; } = new();
-
-    private static readonly string[] UnpricedVariants =
-        ["mini", "nano", "pro", "lite", "research", "search", "audio", "realtime", "transcribe", "tts", "cyber", "image"];
 
     public static PriceList Load()
     {
@@ -61,10 +57,8 @@ public sealed class PriceList
         }
     }
 
-    public ProviderPrices For(AgentProvider p) => p == AgentProvider.Claude ? Claude : Codex;
-
     /// Finds the price family for a model id: longest family id that is a prefix ending at a boundary.
-    public ModelPrice? Match(AgentProvider provider, string model)
+    public ModelPrice? Match(string model)
     {
         var id = model.ToLowerInvariant();
         var claudeAt = id.IndexOf("claude-", StringComparison.Ordinal);
@@ -76,7 +70,7 @@ public sealed class PriceList
         if (id.StartsWith("claude-")) id = id.Replace('.', '-');
 
         ModelPrice? best = null;
-        foreach (var m in For(provider).Models)
+        foreach (var m in Claude.Models)
         {
             var family = m.Id.ToLowerInvariant();
             if (!id.StartsWith(family)) continue;
@@ -87,7 +81,6 @@ public sealed class PriceList
                 var tail = rest[1..];
                 var digits = tail.TakeWhile(char.IsDigit).Count();
                 if (digits is > 0 and < 4) continue;
-                if (UnpricedVariants.Any(v => tail.Contains(v))) continue;
             }
             if (best is null || family.Length > best.Id.Length) best = m;
         }
@@ -96,9 +89,9 @@ public sealed class PriceList
 
     public double? Cost(AgentRecord r)
     {
-        var price = Match(r.Provider, r.Model);
+        var price = Match(r.Model);
         if (price is null) return null;
-        var prov = For(r.Provider);
+        var prov = Claude;
         var mult = (r.Fast ? price.FastMultiplier ?? 1 : 1) * (r.UsOnly ? prov.UsOnlyMultiplier : 1);
         double inR = mult, outR = mult;
         if (price.LongContext is { } lc && r.Input + r.CacheWrite + r.CacheRead > lc.Above)
@@ -114,10 +107,10 @@ public sealed class PriceList
              + r.WebSearches * prov.WebSearch;
     }
 
-    public PlanInfo? Plan(AgentProvider provider, string? tier)
+    public PlanInfo? Plan(string? tier)
     {
         if (string.IsNullOrEmpty(tier)) return null;
         var t = tier.ToLowerInvariant();
-        return For(provider).Plans.FirstOrDefault(p => t.Contains(p.Match.ToLowerInvariant()));
+        return Claude.Plans.FirstOrDefault(p => t.Contains(p.Match.ToLowerInvariant()));
     }
 }

@@ -1,11 +1,9 @@
 using System.IO;
-using ZstdSharp;
 
 namespace PCEssentials.Services.Agents;
 
-/// Reads agent logs line by line as raw UTF-8, without turning lines into strings. Plain logs are
-/// read from where the last read stopped; Codex compresses finished sessions to .jsonl.zst, and
-/// those are read whole.
+/// Reads Claude Code logs line by line as raw UTF-8, without turning lines into strings, from
+/// where the last read stopped.
 public sealed class AgentLogReader
 {
     private const int StartBytes = 1 << 20;
@@ -14,41 +12,32 @@ public sealed class AgentLogReader
 
     public AgentLogReader(int maxLineBytes = 48 << 20) => _maxLineBytes = maxLineBytes;
 
-    public static bool IsLog(string path) =>
-        path.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".jsonl.zst", StringComparison.OrdinalIgnoreCase);
-
-    public static bool IsCompressed(string path) => path.EndsWith(".zst", StringComparison.OrdinalIgnoreCase);
+    /// A Claude Code session log, "<session id>.jsonl". A synced folder can still hold other agents'
+    /// logs from before only Claude was tracked (Codex names its "rollout-<time>-<id>.jsonl"); those are left alone.
+    public static bool IsLog(string path)
+    {
+        var name = path[(path.Replace('\\', '/').LastIndexOf('/') + 1)..];
+        return name.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase) && !name.StartsWith("rollout-", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// The first read of a large history leaves a big buffer behind; hand it back.
     public void Shrink() => _buffer = new byte[StartBytes];
 
-    /// Reads the lines after offset and returns the offset to start from next time. A plain file
-    /// that shrank is read again, and a trailing line without its newline is still being written,
-    /// so it is left for the next read. For a compressed file the offset is its size: it is read
-    /// again only if that changes.
+    /// Reads the lines after offset and returns the offset to start from next time. A file that
+    /// shrank is read again, and a trailing line without its newline is still being written, so it
+    /// is left for the next read.
     public long Read(string path, long offset, Action<ReadOnlyMemory<byte>> onLine)
     {
         var length = new FileInfo(path).Length;
         if (length == offset) return offset;
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
-        if (IsCompressed(path))
-        {
-            try
-            {
-                using var zs = new DecompressionStream(fs);
-                ReadLines(zs, onLine, final: true);
-            }
-            // A damaged file would fail the same way on every scan; keep what was read and move on.
-            catch (ZstdException) { }
-            return length;
-        }
         if (length < offset) offset = 0;
         fs.Seek(offset, SeekOrigin.Begin);
-        return offset + ReadLines(fs, onLine, final: false);
+        return offset + ReadLines(fs, onLine);
     }
 
-    /// Returns the bytes consumed. When final, a last line without a newline counts too.
-    private long ReadLines(Stream stream, Action<ReadOnlyMemory<byte>> onLine, bool final)
+    /// Returns the bytes consumed, up to the last newline.
+    private long ReadLines(Stream stream, Action<ReadOnlyMemory<byte>> onLine)
     {
         var filled = 0;
         var skipping = false;
@@ -84,11 +73,6 @@ public sealed class AgentLogReader
                 Buffer.BlockCopy(_buffer, start, _buffer, 0, filled - start);
                 filled -= start;
             }
-        }
-        if (final && filled > 0)
-        {
-            if (!skipping) onLine(new ReadOnlyMemory<byte>(_buffer, 0, filled));
-            consumed += filled;
         }
         return consumed;
     }

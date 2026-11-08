@@ -46,8 +46,6 @@ public sealed class IslandSettings
     public string AgentsLimitDisplay { get; set; } = "remaining";
     /// Which limit each resting number shows: mostUsed, session or weekly.
     public string AgentsLimitFocus { get; set; } = "mostUsed";
-    /// Agents left out of the resting island ("Claude", "Codex").
-    public List<string> AgentsRestingHidden { get; set; } = [];
     public bool ShowVolumeChanges { get; set; } = true;
     /// Hides Windows' own volume and media pop-up while the island shows volume changes. On laptops the same
     /// pop-up carries brightness, which then goes too.
@@ -185,9 +183,8 @@ public sealed class LauncherSettings
 
 public sealed class AgentSettings
 {
-    /// More folders of Claude Code and Codex logs to count, such as ones synced from another computer.
-    /// Each is searched with its subfolders; Codex logs are told apart by their "rollout-" file names.
-    /// A folder that does not exist is skipped.
+    /// More folders of Claude Code logs to count, such as ones synced from another computer.
+    /// Each is searched with its subfolders. A folder that does not exist is skipped.
     public List<string> ExtraLogFolders { get; set; } = [Path.Combine(Paths.Home, "AgentLogs")];
     /// The Claude seats' order on the agents page, by email; seats not listed follow in their usual order.
     public List<string> SeatOrder { get; set; } = [];

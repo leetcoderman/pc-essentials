@@ -714,14 +714,10 @@ public sealed class IslandWindow : Window
         {
             var live = _ctx.Agents.Summary.Live;
             var first = live[0];
-            var tint = AgentsPage.TintOf(first.Provider);
-            var marks = new StackPanel { Orientation = Orientation.Horizontal };
-            foreach (var p in live.Select(l => l.Provider).Distinct())
-                marks.Children.Add(AgentsPage.Mark(p, live.Count > 1 ? 14 : 16));
-            _capLeft.Child = marks;
+            _capLeft.Child = AgentsPage.Mark(live.Count > 1 ? 14 : 16);
             _capTitle.Text = live.Count > 1 ? $"{live.Count} agents working" : first.Project;
             _capTitle.Foreground = Ui.B(Colors.White, 0.62);
-            _capRight.Child = Ui.Text(Ui.Clock(DateTime.Now - first.Since), 13, FontWeights.SemiBold, 1, tint, true);
+            _capRight.Child = Ui.Text(Ui.Clock(DateTime.Now - first.Since), 13, FontWeights.SemiBold, 1, Ui.Clay, true);
             width = 260;
         }
         else if (_ctx.Media.Current is { IsPlaying: true } np)
@@ -798,9 +794,8 @@ public sealed class IslandWindow : Window
 
     private void ShowAgentFinished(AgentFinished f)
     {
-        var name = f.Provider == AgentProvider.Claude ? "Claude" : "Codex";
         var detail = $"{(f.Project.Length > 0 ? f.Project + " · " : "")}{Ui.Clock(f.Duration)}";
-        ShowNotice(Ui.GCheck, AgentsPage.TintOf(f.Provider), $"{name} finished", detail, null, TimeSpan.FromSeconds(6));
+        ShowNotice(Ui.GCheck, Ui.Clay, "Claude finished", detail, null, TimeSpan.FromSeconds(6));
         System.Media.SystemSounds.Asterisk.Play();
     }
 

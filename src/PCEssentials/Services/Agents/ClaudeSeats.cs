@@ -134,10 +134,10 @@ public sealed class ClaudeSeatService : IDisposable
                 seat.AccountId = Str(acct, "accountUuid");
                 // A Team or Enterprise organization names the plan, whatever the seat's own tier says.
                 var orgType = Str(acct, "organizationType") ?? "";
-                var plan = (orgType.Contains("team") || orgType.Contains("enterprise") ? _prices.Plan(AgentProvider.Claude, orgType) : null)
-                        ?? _prices.Plan(AgentProvider.Claude, Str(acct, "userRateLimitTier"))
-                        ?? _prices.Plan(AgentProvider.Claude, Str(acct, "organizationRateLimitTier"))
-                        ?? _prices.Plan(AgentProvider.Claude, orgType);
+                var plan = (orgType.Contains("team") || orgType.Contains("enterprise") ? _prices.Plan(orgType) : null)
+                        ?? _prices.Plan(Str(acct, "userRateLimitTier"))
+                        ?? _prices.Plan(Str(acct, "organizationRateLimitTier"))
+                        ?? _prices.Plan(orgType);
                 seat.PlanName = plan?.Name;
                 seat.PlanMonthly = plan?.Monthly;
             }

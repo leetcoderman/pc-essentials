@@ -28,6 +28,28 @@ public sealed class AgentLogReaderTests : IDisposable
     [InlineData("notes.json", false)]
     public void IsLog(string path, bool expected) => Assert.Equal(expected, AgentLogReader.IsLog(path));
 
+    /// A response from the newest model, as Claude Code writes it, reaches the parser whole: the reader
+    /// passes the line on untouched, with the model id and the usage the price is worked out from.
+    [Fact]
+    public void Fable52ResponseIsReadWhole()
+    {
+        const string line = "{\"type\":\"assistant\",\"requestId\":\"req_1\",\"timestamp\":\"2026-11-10T17:43:39.618Z\",\"cwd\":\"Z:\\\\Suite\","
+            + "\"message\":{\"id\":\"msg_1\",\"model\":\"claude-fable-5-2\",\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":21603,"
+            + "\"cache_read_input_tokens\":28132,\"output_tokens\":591,\"cache_creation\":{\"ephemeral_1h_input_tokens\":21603,\"ephemeral_5m_input_tokens\":0},"
+            + "\"speed\":\"standard\",\"inference_geo\":\"global\"}}}";
+        var path = Path.Combine(_dir, "0b6f3c1e.jsonl");
+        File.WriteAllText(path, line + "\n");
+        long offset = 0;
+
+        var read = Assert.Single(Read(new AgentLogReader(), path, ref offset));
+        Assert.Equal(line, read);
+        using var doc = System.Text.Json.JsonDocument.Parse(read);
+        var message = doc.RootElement.GetProperty("message");
+        Assert.Equal("claude-fable-5-2", message.GetProperty("model").GetString());
+        Assert.Equal("Fable 5.2", AgentStats.ModelDisplay(message.GetProperty("model").GetString()!));
+        Assert.Equal(591, message.GetProperty("usage").GetProperty("output_tokens").GetInt64());
+    }
+
     [Fact]
     public void PlainLogIsReadFromWhereItStopped()
     {

@@ -94,9 +94,10 @@ public sealed class AgentsPage : IslandPage
         Child = Ui.Text(text, 11.5, FontWeights.SemiBold, 1, tint),
     };
 
-    private static TextBlock Money(double usd, double size = 14.5)
+    /// atLeast: some of the work behind the amount has no known price, so it is a minimum ("≥").
+    private static TextBlock Money(double usd, double size = 14.5, bool atLeast = false)
     {
-        var t = Ui.Text(Ui.Money(usd), size, FontWeights.Bold, 1, AgentResting.SpendTint(usd));
+        var t = Ui.Text((atLeast ? "≥" : "") + Ui.Money(usd), size, FontWeights.Bold, 1, AgentResting.SpendTint(usd));
         Typography.SetNumeralAlignment(t, FontNumeralAlignment.Tabular);
         return t;
     }
@@ -344,7 +345,9 @@ public sealed class AgentsPage : IslandPage
         dock.Children.Add(header);
 
         var buckets = _trendPeriod switch { "today" => s.Hourly, "30" => s.Daily30, _ => s.Daily };
-        var totalText = Ui.Text(Whole(buckets.Sum()), 13, FontWeights.SemiBold, 0.6);
+        // A bucket with work the price list cannot price: its bar is a minimum, or a stub when it is worth nothing.
+        var unpriced = _trendPeriod switch { "today" => s.HourlyUnpriced, "30" => s.Daily30Unpriced, _ => s.DailyUnpriced };
+        var totalText = Ui.Text((unpriced.Contains(true) ? "≥" : "") + Whole(buckets.Sum()), 13, FontWeights.SemiBold, 0.6);
         totalText.Margin = new Thickness(0, -2, 0, 8);
         DockPanel.SetDock(totalText, Dock.Top);
         dock.Children.Add(totalText);
@@ -352,7 +355,7 @@ public sealed class AgentsPage : IslandPage
         var max = Math.Max(0.01, buckets.DefaultIfEmpty(0).Max());
         var bars = new UniformGrid { Rows = 1 };
         var dense = buckets.Count > 10;
-        var columns = new List<(Border Bar, double Value)>();
+        var columns = new List<(Border Bar, double Value, bool NoPrice)>();
         for (var i = 0; i < buckets.Count; i++)
         {
             var column = new DockPanel { Margin = new Thickness(dense ? 0.75 : 3, 0, dense ? 0.75 : 3, 0), LastChildFill = true };
@@ -369,13 +372,14 @@ public sealed class AgentsPage : IslandPage
             DockPanel.SetDock(l, Dock.Bottom);
             column.Children.Add(l);
             var v = buckets[i];
+            var noPrice = i < unpriced.Count && unpriced[i];
             var bar = new Border
             {
                 VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 6),
-                Background = v > 0 ? Ui.B(Ui.Clay) : Ui.White(0.14), CornerRadius = new CornerRadius(dense ? 2 : 4),
-                Height = 3, ToolTip = Ui.Money(v),
+                Background = v > 0 ? Ui.B(Ui.Clay) : Ui.White(noPrice ? 0.4 : 0.14), CornerRadius = new CornerRadius(dense ? 2 : 4),
+                Height = noPrice ? 5 : 3, ToolTip = v > 0 ? (noPrice ? "≥" : "") + Ui.Money(v) : noPrice ? "No price" : Ui.Money(v),
             };
-            columns.Add((bar, v));
+            columns.Add((bar, v, noPrice));
             column.Children.Add(bar);
             bars.Children.Add(column);
         }
@@ -383,7 +387,7 @@ public sealed class AgentsPage : IslandPage
         bars.SizeChanged += (_, _) =>
         {
             var room = Math.Max(10, bars.ActualHeight - 26);
-            foreach (var (bar, v) in columns) bar.Height = v > 0 ? Math.Max(2, v / max * room) : 3;
+            foreach (var (bar, v, noPrice) in columns) bar.Height = v > 0 ? Math.Max(2, v / max * room) : noPrice ? 5 : 3;
         };
         dock.Children.Add(bars);
         return Card(dock);
@@ -411,13 +415,13 @@ public sealed class AgentsPage : IslandPage
 
         // Today, 7 days and 30 days in three columns.
         var periods = new Grid { Margin = new Thickness(0, 10, 0, 12) };
-        var cells = new[] { ("Today", s.Today.Cost), ("7 days", s.Week.Cost), ("30 days", s.Month.Cost) };
+        var cells = new[] { ("Today", s.Today), ("7 days", s.Week), ("30 days", s.Month) };
         for (var i = 0; i < cells.Length; i++)
         {
             periods.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             var cell = new StackPanel();
             cell.Children.Add(Ui.Text(cells[i].Item1, 11, FontWeights.SemiBold, 0.45));
-            cell.Children.Add(Money(cells[i].Item2, 13.5));
+            cell.Children.Add(Money(cells[i].Item2.Cost, 13.5, cells[i].Item2.Unpriced > 0));
             Grid.SetColumn(cell, i);
             periods.Children.Add(cell);
         }
@@ -429,10 +433,20 @@ public sealed class AgentsPage : IslandPage
         var max = Math.Max(0.0001, s.AllTimeModels.Select(r => r.Cost).DefaultIfEmpty(0).Max());
         foreach (var r in s.AllTimeModels)
         {
-            var value = Ui.Text(Whole(r.Cost), 12.5, FontWeights.SemiBold, 0.9);
+            // A model the price list does not know keeps its row: "no price" where the bar would be, and its tokens.
+            var value = Ui.Text(r.NoPrice ? Ui.Tokens(r.Tokens) : (r.Unpriced > 0 ? "≥" : "") + Whole(r.Cost), 12.5, FontWeights.SemiBold, r.NoPrice ? 0.6 : 0.9);
             value.HorizontalAlignment = HorizontalAlignment.Right;
             Typography.SetNumeralAlignment(value, FontNumeralAlignment.Tabular);
-            var row = Ui.Columns((Ui.Text(r.Name, 12.5, FontWeights.SemiBold, 0.95), Ui.Px(74)), (Bar(r.Cost / max), Ui.Star), (value, Ui.Px(50)));
+            FrameworkElement middle = Bar(r.Cost / max);
+            if (r.NoPrice)
+            {
+                var none = Ui.Text("no price", 11, FontWeights.SemiBold, 0.9, Ui.Orange);
+                none.Margin = new Thickness(4, 0, 8, 0);
+                none.VerticalAlignment = VerticalAlignment.Center;
+                none.ToolTip = "This model is not in the price list yet, so its tokens are counted without a cost";
+                middle = none;
+            }
+            var row = Ui.Columns((Ui.Text(r.Name, 12.5, FontWeights.SemiBold, 0.95), Ui.Px(74)), (middle, Ui.Star), (value, Ui.Px(50)));
             row.Margin = new Thickness(0, 0, 0, 5);
             stack.Children.Add(row);
         }
@@ -463,9 +477,11 @@ public sealed class AgentsPage : IslandPage
     {
         var stack = new StackPanel();
         var days = s.Activity;
+        // A day whose only work has no known price is still a day of work: the lowest green, and no value.
+        bool NoPrice(int i) => i < s.ActivityUnpriced.Count && s.ActivityUnpriced[i];
         var total = days.Sum();
         var title = new TextBlock { Margin = new Thickness(0, 0, 0, 10) };
-        title.Inlines.Add(new Run(Whole(total)) { FontSize = 15, FontWeight = FontWeights.Bold, FontFamily = Ui.Display, Foreground = Ui.White(0.95) });
+        title.Inlines.Add(new Run((s.ActivityUnpriced.Contains(true) ? "≥" : "") + Whole(total)) { FontSize = 15, FontWeight = FontWeights.Bold, FontFamily = Ui.Display, Foreground = Ui.White(0.95) });
         title.Inlines.Add(new Run(" in the last year") { FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Ui.White(0.95) });
         stack.Children.Add(title);
 
@@ -526,9 +542,9 @@ public sealed class AgentsPage : IslandPage
             var cell = new Border
             {
                 Margin = new Thickness(1.2), CornerRadius = new CornerRadius(2),
-                Background = Level(LevelOf(v)),
+                Background = Level(v <= 0 && NoPrice(i) ? 1 : LevelOf(v)),
                 BorderBrush = isToday ? Ui.White(0.85) : null, BorderThickness = new Thickness(isToday ? 1 : 0),
-                ToolTip = $"{first.AddDays(i):ddd d MMM yyyy}: {Ui.Money(v)}",
+                ToolTip = $"{first.AddDays(i):ddd d MMM yyyy}: {(v <= 0 && NoPrice(i) ? "no price" : (NoPrice(i) ? "≥" : "") + Ui.Money(v))}",
             };
             Grid.SetColumn(cell, i / 7 + 1);
             Grid.SetRow(cell, i % 7 + 1);
@@ -543,7 +559,7 @@ public sealed class AgentsPage : IslandPage
         var more = Ui.Text("More", 11, FontWeights.Medium, 0.55);
         more.Margin = new Thickness(6, 0, 0, 0);
         legend.Children.Add(more);
-        var active = Ui.Text($"Active days {days.Count(v => v > 0)}", 11.5, FontWeights.Medium, 0.55);
+        var active = Ui.Text($"Active days {Enumerable.Range(0, days.Count).Count(i => days[i] > 0 || NoPrice(i))}", 11.5, FontWeights.Medium, 0.55);
         var foot = Ui.Columns((active, Ui.Star), (legend, Ui.Auto));
         foot.Margin = new Thickness(labelWidth, 10, 0, 0);
         stack.Children.Add(foot);

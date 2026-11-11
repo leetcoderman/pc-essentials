@@ -25,7 +25,12 @@ public sealed record PeriodTotal(long Tokens, double Cost, int Requests, int Unp
     public static readonly PeriodTotal Empty = new(0, 0, 0, 0);
 }
 
-public sealed record RankedRow(string Name, long Tokens, double Cost);
+/// Unpriced counts the model's requests the price list has no price for, which are left out of Cost.
+public sealed record RankedRow(string Name, long Tokens, double Cost, int Unpriced = 0)
+{
+    /// Tokens but no value at all: none of the model's requests could be priced.
+    public bool NoPrice => Unpriced > 0 && Cost <= 0;
+}
 
 /// A request's time and cost, kept for working out what a limit window has cost so far.
 public readonly record struct TimedCost(string Seat, DateTime Time, double Cost);
@@ -47,11 +52,18 @@ public sealed class AgentStats
     public List<double> Daily { get; private init; } = [];
     public List<double> Daily30 { get; private init; } = [];
     public List<double> Hourly { get; private init; } = [];
+    /// Whether each bucket of Daily, Daily30 and Hourly holds a request without a known price: its
+    /// cost is then a minimum, and a bucket worth nothing still saw work.
+    public List<bool> DailyUnpriced { get; private init; } = [];
+    public List<bool> Daily30Unpriced { get; private init; } = [];
+    public List<bool> HourlyUnpriced { get; private init; } = [];
     /// The activity grid's first day: the Sunday 52 weeks before this week's, so the grid is 53 whole columns.
     public DateTime ActivityFrom { get; private init; }
     /// Cost per day from ActivityFrom to today, oldest first.
     public List<double> Activity { get; private init; } = [];
-    /// The most valuable models over the whole history.
+    /// The same for each day of Activity.
+    public List<bool> ActivityUnpriced { get; private init; } = [];
+    /// The models the Spend card lists over the whole history, as RankModels picks them.
     public List<RankedRow> AllTimeModels { get; private init; } = [];
     public DateTime? LastActivity { get; private init; }
     /// Cost since the 1st of the month, per profile that wrote it.
@@ -83,7 +95,10 @@ public sealed class AgentStats
         var daily30 = new double[30];
         var hourly = new double[24];
         var activity = new double[(today - activityFrom).Days + 1];
-        var models = new Dictionary<string, (long Tokens, double Cost)>();
+        var daily30Unpriced = new bool[30];
+        var hourlyUnpriced = new bool[24];
+        var activityUnpriced = new bool[activity.Length];
+        var models = new Dictionary<string, (long Tokens, double Cost, int Unpriced)>();
         var seatMonth = new Dictionary<string, double>();
         var recent = new List<TimedCost>();
         var names = new Dictionary<string, string>();
@@ -102,15 +117,29 @@ public sealed class AgentStats
             if (time >= calendarFrom) seatMonth[r.Seat] = seatMonth.GetValueOrDefault(r.Seat) + cost;
             if (last is null || time > last) last = time;
 
+            var unpriced = r.Cost is null;
             var day = (date - monthFrom).Days;
-            if (day is >= 0 and < 30) daily30[day] += cost;
-            if (time >= today && time < today.AddHours(24)) hourly[(int)((time - today).Ticks / TimeSpan.TicksPerHour)] += cost;
+            if (day is >= 0 and < 30)
+            {
+                daily30[day] += cost;
+                daily30Unpriced[day] |= unpriced;
+            }
+            if (time >= today && time < today.AddHours(24))
+            {
+                var hour = (int)((time - today).Ticks / TimeSpan.TicksPerHour);
+                hourly[hour] += cost;
+                hourlyUnpriced[hour] |= unpriced;
+            }
             var cell = (date - activityFrom).Days;
-            if (cell >= 0 && cell < activity.Length) activity[cell] += cost;
+            if (cell >= 0 && cell < activity.Length)
+            {
+                activity[cell] += cost;
+                activityUnpriced[cell] |= unpriced;
+            }
 
             if (!names.TryGetValue(r.Model, out var name)) names[r.Model] = name = ModelDisplay(r.Model);
             var m = models.GetValueOrDefault(name);
-            models[name] = (m.Tokens + tokens, m.Cost + cost);
+            models[name] = (m.Tokens + tokens, m.Cost + cost, m.Unpriced + (unpriced ? 1 : 0));
 
             if (time >= recentFrom) recent.Add(new TimedCost(r.Seat, time, cost));
         }
@@ -126,15 +155,33 @@ public sealed class AgentStats
             Daily = daily30[23..].ToList(),
             Daily30 = [.. daily30],
             Hourly = [.. hourly],
+            DailyUnpriced = daily30Unpriced[23..].ToList(),
+            Daily30Unpriced = [.. daily30Unpriced],
+            HourlyUnpriced = [.. hourlyUnpriced],
             ActivityFrom = activityFrom,
             Activity = [.. activity],
-            // The three costliest, then the most tokens; ties keep the order the models first appeared in.
-            AllTimeModels = models.Select(kv => new RankedRow(kv.Key, kv.Value.Tokens, kv.Value.Cost))
-                .OrderByDescending(r => r.Cost).ThenByDescending(r => r.Tokens).Take(3).ToList(),
+            ActivityUnpriced = [.. activityUnpriced],
+            AllTimeModels = RankModels(models.Select(kv => new RankedRow(kv.Key, kv.Value.Tokens, kv.Value.Cost, kv.Value.Unpriced))),
             LastActivity = last,
             SeatMonthCost = seatMonth,
             Recent = recent,
         };
+    }
+
+    /// The Spend card's model rows, the same way the Mac app picks them: the costliest first, then the
+    /// models the price list does not know, which have tokens but no value. Such a model always keeps a
+    /// row (up to half the rows, two at most, the most tokens first) so new work never vanishes behind
+    /// the priced models; a model with nothing counted is left out. Ties go by name.
+    public static List<RankedRow> RankModels(IEnumerable<RankedRow> models, int limit = 3)
+    {
+        var all = models.ToList();
+        var unknown = all.Where(r => r.NoPrice)
+            .OrderByDescending(r => r.Tokens).ThenBy(r => r.Name, StringComparer.Ordinal)
+            .Take(Math.Min(2, Math.Max(0, limit) / 2)).ToList();
+        var priced = all.Where(r => r.Cost > 0)
+            .OrderByDescending(r => r.Cost).ThenBy(r => r.Name, StringComparer.Ordinal)
+            .Take(Math.Max(0, limit - unknown.Count));
+        return [.. priced, .. unknown];
     }
 
     /// Cost inside a limit window: from its start (reset minus its length) until now.

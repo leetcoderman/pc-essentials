@@ -19,9 +19,15 @@
     <Compile Include="..\..\src\PCEssentials\Services\Agents\AgentLogReader.cs" Link="Agents\AgentLogReader.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Agents\ClaudeAccounts.cs" Link="Agents\ClaudeAccounts.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Agents\AgentStats.cs" Link="Agents\AgentStats.cs" />
+    <Compile Include="..\..\src\PCEssentials\Services\Agents\AgentPricing.cs" Link="Agents\AgentPricing.cs" />
     <Compile Include="..\..\src\PCEssentials\Core\HotkeyMatcher.cs" Link="Core\HotkeyMatcher.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Launcher\FuzzyMatcher.cs" Link="Launcher\FuzzyMatcher.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Launcher\Calculator.cs" Link="Launcher\Calculator.cs" />
+  </ItemGroup>
+
+  <!-- The price list the app embeds, so the tests price against what ships. -->
+  <ItemGroup>
+    <None Include="..\..\src\PCEssentials\Resources\agent-prices.json" Link="agent-prices.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

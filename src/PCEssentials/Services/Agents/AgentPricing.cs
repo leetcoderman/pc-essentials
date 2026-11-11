@@ -38,24 +38,13 @@ public sealed class ProviderPrices
     public List<PlanInfo> Plans { get; set; } = [];
 }
 
-public sealed class PriceList
+public sealed partial class PriceList
 {
     public ProviderPrices Claude { get; set; } = new();
 
-    public static PriceList Load()
-    {
-        try
-        {
-            using var stream = typeof(PriceList).Assembly.GetManifestResourceStream("PCEssentials.Resources.agent-prices.json");
-            if (stream is null) return new PriceList();
-            return JsonSerializer.Deserialize<PriceList>(stream, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new PriceList();
-        }
-        catch (Exception ex)
-        {
-            Core.Log.Error("prices", ex);
-            return new PriceList();
-        }
-    }
+    /// Reads a price list as agent-prices.json holds it.
+    public static PriceList Parse(Stream json) =>
+        JsonSerializer.Deserialize<PriceList>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new PriceList();
 
     /// Finds the price family for a model id: longest family id that is a prefix ending at a boundary.
     public ModelPrice? Match(string model)

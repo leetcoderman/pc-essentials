@@ -32,10 +32,15 @@ public sealed record AgentSummary
     public List<double> Daily { get; init; } = [];
     public List<double> Daily30 { get; init; } = [];
     public List<double> Hourly { get; init; } = [];
+    /// Whether each of those buckets holds a request without a known price.
+    public List<bool> DailyUnpriced { get; init; } = [];
+    public List<bool> Daily30Unpriced { get; init; } = [];
+    public List<bool> HourlyUnpriced { get; init; } = [];
     /// Cost per day for the activity grid: 53 weeks from ActivityFrom (a Sunday) to today.
     public DateTime ActivityFrom { get; init; }
     public List<double> Activity { get; init; } = [];
-    /// The most valuable models over the whole history.
+    public List<bool> ActivityUnpriced { get; init; } = [];
+    /// The models the Spend card lists over the whole history; one without a price keeps a row.
     public List<RankedRow> AllTimeModels { get; init; } = [];
     /// The main profile's plan and limits.
     public AgentLimits? Limits { get; init; }
@@ -480,8 +485,12 @@ public sealed class AgentUsageService : IDisposable
             Daily = stats.Daily,
             Daily30 = stats.Daily30,
             Hourly = stats.Hourly,
+            DailyUnpriced = stats.DailyUnpriced,
+            Daily30Unpriced = stats.Daily30Unpriced,
+            HourlyUnpriced = stats.HourlyUnpriced,
             ActivityFrom = stats.ActivityFrom,
             Activity = stats.Activity,
+            ActivityUnpriced = stats.ActivityUnpriced,
             AllTimeModels = stats.AllTimeModels,
             Limits = limits,
             Live = live.OrderBy(l => l.Since).ToList(),

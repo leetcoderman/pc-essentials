@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
@@ -10,14 +11,20 @@ using PCEssentials.UI.Screenshot;
 namespace PCEssentials.Services.Screenshot;
 
 /// Lightshot-style screenshots: the capture overlay, the instant full-screen save, and what happens
-/// to a finished image (copy, save, print, open in Paint). Nothing is ever uploaded.
+/// to a finished image (copy, save, print, open in Paint, upload for a share link). An image leaves
+/// this PC only when Upload is pressed, and only once an ImgBB API key has been added in Settings.
 public sealed class ScreenshotService
 {
     private readonly AppSettings _settings;
     private ShotOverlay? _overlay;
 
-    /// Shows a notification: its text, and a file to reveal when it is clicked (or null).
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
+
+    /// Shows a notification: its text, and a file to reveal or an https link to open when it is clicked (or null).
     public Action<string, string?> Notify { get; set; } = (_, _) => { };
+
+    /// Opens the settings window, for adding the upload key.
+    public Action OpenSettings { get; set; } = () => { };
 
     public ScreenshotService(AppSettings settings)
     {
@@ -135,6 +142,13 @@ public sealed class ScreenshotService
 
     private void Write(BitmapSource image, string path, string format)
     {
+        var tmp = path + ".tmp";
+        using (var stream = File.Create(tmp)) Encode(image, format, stream);
+        File.Move(tmp, path, true);
+    }
+
+    private void Encode(BitmapSource image, string format, Stream stream)
+    {
         BitmapEncoder encoder = format switch
         {
             "jpg" => new JpegBitmapEncoder { QualityLevel = Math.Clamp(S.JpegQuality, 10, 100) },
@@ -142,9 +156,62 @@ public sealed class ScreenshotService
             _ => new PngBitmapEncoder(),
         };
         encoder.Frames.Add(BitmapFrame.Create(image));
-        var tmp = path + ".tmp";
-        using (var stream = File.Create(tmp)) encoder.Save(stream);
-        File.Move(tmp, path, true);
+        encoder.Save(stream);
+    }
+
+    private byte[] Bytes(BitmapSource image, string format)
+    {
+        using var stream = new MemoryStream();
+        Encode(image, format, stream);
+        return stream.ToArray();
+    }
+
+    // ---------------- Share links ----------------
+
+    public bool CanUpload => Secret.Unprotect(S.UploadKey).Length > 0;
+
+    /// Uploads the image to ImgBB and puts its link on the clipboard, like Lightshot's upload.
+    /// If the upload fails the image itself is copied instead, so the capture isn't lost.
+    public async void Upload(BitmapSource image)
+    {
+        var key = Secret.Unprotect(S.UploadKey);
+        if (key.Length == 0) return;
+        try
+        {
+            // PNG unless JPEG is the chosen format; a PNG too large for ImgBB goes as JPEG.
+            var format = S.Format == "jpg" ? "jpg" : "png";
+            var data = Bytes(image, format);
+            if (data.Length > ShotUpload.MaxBytes && format == "png") data = Bytes(image, format = "jpg");
+            if (data.Length > ShotUpload.MaxBytes) throw new ShotUploadException("The image is larger than ImgBB's 32 MB limit.");
+            var link = await ShotUpload.SendAsync(Http, data, "screenshot." + format, key, S.UploadExpirySeconds);
+            if (CopyText(link)) Notify($"Link copied to the clipboard. Click to open it.\n{link}", link);
+            else Notify($"Uploaded, but the clipboard was busy. Click to open the link.\n{link}", link);
+            Log.Info("screenshot: uploaded");
+        }
+        catch (Exception ex) when (ex is ShotUploadException or HttpRequestException or TaskCanceledException)
+        {
+            // Only the kind of failure is logged: a request error can carry the address, which holds the key.
+            Log.Info($"screenshot: upload failed ({ex.GetType().Name})");
+            var reason = ex is ShotUploadException ? ex.Message : "ImgBB could not be reached.";
+            Copy(image, notify: false);
+            Notify($"Upload failed: {reason} The screenshot is on the clipboard instead.", null);
+        }
+        catch (Exception ex)
+        {
+            Log.Info($"screenshot: upload failed ({ex.GetType().Name})");
+            Copy(image, notify: false);
+            Notify("Upload failed. The screenshot is on the clipboard instead.", null);
+        }
+    }
+
+    private static bool CopyText(string text)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try { System.Windows.Clipboard.SetText(text); return true; }
+            catch (System.Runtime.InteropServices.COMException) { Thread.Sleep(60); }
+        }
+        return false;
     }
 
     /// The print dialog, then the image fitted to the page (never enlarged). True when printed.

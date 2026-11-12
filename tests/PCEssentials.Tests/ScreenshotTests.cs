@@ -269,6 +269,95 @@ public class ShotFilesTests
         Assert.Equal(format, ShotFiles.FormatFromPath(path, "png"));
 }
 
+public class ShotUploadTests
+{
+    private sealed class FakeHost(System.Net.HttpStatusCode status, string body) : HttpMessageHandler
+    {
+        public HttpRequestMessage? Request;
+        public string Sent = "";
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancel)
+        {
+            Request = request;
+            Sent = await request.Content!.ReadAsStringAsync(cancel);
+            return new HttpResponseMessage(status) { Content = new StringContent(body) };
+        }
+    }
+
+    private const string Ok = """{"data":{"id":"2ndCYJK","url_viewer":"https://ibb.co/2ndCYJK","url":"https://i.ibb.co/w04Prt6/screenshot.png","delete_url":"https://ibb.co/2ndCYJK/670a7e48ddcb85ac340c717a41047e5c"},"success":true,"status":200}""";
+    private const string BadKey = """{"status_code":400,"error":{"message":"Invalid API v1 key.","code":100},"status_txt":"Bad Request"}""";
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(-5, 0)]
+    [InlineData(10, 60)]
+    [InlineData(3600, 3600)]
+    [InlineData(99999999, 15552000)]
+    public void ExpirationStaysWithinWhatImgBBTakes(int seconds, int expected) =>
+        Assert.Equal(expected, ShotUpload.Expiration(seconds));
+
+    [Fact]
+    public void EndpointCarriesTheCleanedKeyAndOnlyARealExpiry()
+    {
+        Assert.Equal("https://api.imgbb.com/1/upload?key=abc123", ShotUpload.Endpoint(" abc 123\r\n", 0).AbsoluteUri);
+        Assert.Equal("https://api.imgbb.com/1/upload?key=abc123&expiration=86400", ShotUpload.Endpoint("abc123", 86400).AbsoluteUri);
+        Assert.Equal("https://api.imgbb.com/1/upload?key=a%26b", ShotUpload.Endpoint("a&b", 0).AbsoluteUri);
+    }
+
+    [Fact]
+    public void ParseReturnsTheDirectLink()
+    {
+        Assert.True(ShotUpload.TryParse(Ok, out var link, out var error));
+        Assert.Equal("https://i.ibb.co/w04Prt6/screenshot.png", link);
+        Assert.Equal("", error);
+    }
+
+    [Fact]
+    public void ParseGivesImgBBsReasonWhenItRefuses()
+    {
+        Assert.False(ShotUpload.TryParse(BadKey, out var link, out var error));
+        Assert.Equal("", link);
+        Assert.Equal("Invalid API v1 key.", error);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    [InlineData("<html>502 Bad Gateway</html>")]
+    [InlineData("[]")]
+    [InlineData("""{"data":{}}""")]
+    [InlineData("""{"data":{"url":"http://i.ibb.co/x/y.png"}}""")]
+    [InlineData("""{"data":{"url":"not a link"}}""")]
+    [InlineData("""{"data":{"url":42}}""")]
+    public void ParseNeverTreatsAnythingElseAsALink(string? body)
+    {
+        Assert.False(ShotUpload.TryParse(body, out var link, out var error));
+        Assert.Equal("", link);
+        Assert.NotEqual("", error);
+    }
+
+    [Fact]
+    public async Task SendPostsTheImageAndReturnsTheLink()
+    {
+        var host = new FakeHost(System.Net.HttpStatusCode.OK, Ok);
+        using var http = new HttpClient(host);
+        var link = await ShotUpload.SendAsync(http, [1, 2, 3], "screenshot.png", "abc123", 3600);
+        Assert.Equal("https://i.ibb.co/w04Prt6/screenshot.png", link);
+        Assert.Equal(HttpMethod.Post, host.Request!.Method);
+        Assert.Equal("https://api.imgbb.com/1/upload?key=abc123&expiration=3600", host.Request.RequestUri!.AbsoluteUri);
+        Assert.Contains("name=image", host.Sent);
+        Assert.Contains("filename=screenshot.png", host.Sent);
+        Assert.Contains("image/png", host.Sent);
+    }
+
+    [Fact]
+    public async Task SendThrowsImgBBsReasonWhenItRefuses()
+    {
+        using var http = new HttpClient(new FakeHost(System.Net.HttpStatusCode.BadRequest, BadKey));
+        var ex = await Assert.ThrowsAsync<ShotUploadException>(() => ShotUpload.SendAsync(http, [1], "screenshot.jpg", "nope", 0));
+        Assert.Equal("Invalid API v1 key.", ex.Message);
+    }
+}
+
 public class SnippingKeyTests
 {
     [Theory]

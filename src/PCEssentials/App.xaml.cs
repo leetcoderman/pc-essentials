@@ -207,6 +207,7 @@ public partial class App : System.Windows.Application
         _tray = new Forms.NotifyIcon { Icon = _trayIcon, Text = "PC Essentials", Visible = true };
         if (_shots is not null)
         {
+            _shots.OpenSettings = OpenSettings;
             _shots.Notify = (text, path) =>
             {
                 _balloonPath = path;
@@ -214,7 +215,12 @@ public partial class App : System.Windows.Application
             };
             _tray.BalloonTipClicked += (_, _) =>
             {
-                if (_balloonPath is { } file && System.IO.File.Exists(file))
+                if (_balloonPath is { } link && link.StartsWith("https://", StringComparison.Ordinal))
+                {
+                    try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(link) { UseShellExecute = true }); }
+                    catch (Exception ex) { Log.Error("open link", ex); }
+                }
+                else if (_balloonPath is { } file && System.IO.File.Exists(file))
                     System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{file}\"");
                 _balloonPath = null;
             };

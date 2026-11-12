@@ -19,7 +19,7 @@ public sealed partial class SettingsWindow
         p.Children.Add(Heading("Screenshots"));
         p.Children.Add(Check("Enable the screenshot tool", c.Enabled, v => { c.Enabled = v; Changed(); _rebindShortcuts(); }));
         p.Children.Add(Note("Works like Lightshot: the screen freezes, you drag to select an area, then draw on it and copy, save or print it. " +
-                            "Ctrl+A or a double click selects the whole monitor, Esc cancels. Screenshots never leave this PC: there is no upload."));
+                            "Ctrl+A or a double click selects the whole monitor, Esc cancels. Screenshots stay on this PC unless you press Upload."));
 
         p.Children.Add(Heading("Print Screen key"));
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) };
@@ -95,6 +95,30 @@ public sealed partial class SettingsWindow
         p.Children.Add(Labeled("Format", Choice(c.Format, [("png", "PNG"), ("jpg", "JPEG"), ("bmp", "BMP")], v => { c.Format = v; Preview(); }), 240));
         Preview();
         p.Children.Add(Labeled("JPEG quality", NumberSlider(10, 100, c.JpegQuality, 5, v => { c.JpegQuality = (int)v; Changed(); }), 240));
+
+        p.Children.Add(Heading("Share links"));
+        p.Children.Add(Note("The Upload button (Ctrl+D) sends the screenshot to ImgBB and copies a link anyone can open, like Lightshot. " +
+                            "It needs your own free ImgBB API key: sign in at imgbb.com, then open api.imgbb.com and copy the key. " +
+                            "Without a key nothing is ever uploaded."));
+        var key = new PasswordBox { Password = Secret.Unprotect(c.UploadKey), Width = 300, HorizontalAlignment = HorizontalAlignment.Left };
+        key.PasswordChanged += (_, _) =>
+        {
+            var cleaned = ShotUpload.CleanKey(key.Password);
+            if (cleaned == Secret.Unprotect(c.UploadKey)) return;
+            c.UploadKey = Secret.Protect(cleaned);
+            Changed();
+        };
+        var getKey = new Button { Content = "Get a key…", Padding = new Thickness(12, 2, 12, 2), Margin = new Thickness(6, 0, 0, 0) };
+        getKey.Click += (_, _) =>
+        {
+            try { Process.Start(new ProcessStartInfo("https://api.imgbb.com/") { UseShellExecute = true }); }
+            catch (Exception ex) { Log.Error("open imgbb", ex); }
+        };
+        p.Children.Add(Labeled("ImgBB API key", Ui.Columns((key, Ui.Auto), (getKey, Ui.Auto), (Ui.Spacer(), Ui.Star)), 240));
+        p.Children.Add(Labeled("Uploaded screenshots",
+            Choice(c.UploadExpirySeconds.ToString(), ShotUpload.Lifetimes.Select(l => (l.Seconds.ToString(), l.Name)).ToArray(), v => c.UploadExpirySeconds = int.Parse(v)), 240));
+        p.Children.Add(Note("The key is stored encrypted for your Windows account. Uploads appear in your ImgBB account, where you can delete them. " +
+                            "If an upload fails, the screenshot is copied to the clipboard instead."));
 
         p.Children.Add(Heading("Behaviour"));
         p.Children.Add(Check("Also copy to the clipboard when saving or printing", c.AutoCopy, v => { c.AutoCopy = v; Changed(); }));

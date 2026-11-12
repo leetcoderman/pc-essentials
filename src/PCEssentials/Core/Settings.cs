@@ -147,6 +147,10 @@ public sealed class ScreenshotSettings
     public bool Magnifier { get; set; } = true;
     /// ARGB of the drawing colour.
     public uint Color { get; set; } = 0xFFFF0000;
+    /// The ImgBB API key for share links, encrypted for this Windows user (see Secret). Empty = uploading is off.
+    public string UploadKey { get; set; } = "";
+    /// How long ImgBB keeps an uploaded screenshot, in seconds. 0 = until it is deleted there.
+    public int UploadExpirySeconds { get; set; }
     /// Set once Lightshot's own options have been copied over.
     public bool LightshotImported { get; set; }
 }

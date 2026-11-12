@@ -13,6 +13,7 @@
     <Compile Include="..\..\src\PCEssentials\Services\GameMode\GameDetector.cs" Link="GameMode\GameDetector.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Screenshot\ShotGeometry.cs" Link="Screenshot\ShotGeometry.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Screenshot\ShotModel.cs" Link="Screenshot\ShotModel.cs" />
+    <Compile Include="..\..\src\PCEssentials\Services\Screenshot\ShotUpload.cs" Link="Screenshot\ShotUpload.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\AudioSessionKeys.cs" Link="Audio\AudioSessionKeys.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\ShakeToFind\ShakeDetector.cs" Link="ShakeToFind\ShakeDetector.cs" />
     <Compile Include="..\..\src\PCEssentials\Services\Agents\AgentLogPaths.cs" Link="Agents\AgentLogPaths.cs" />

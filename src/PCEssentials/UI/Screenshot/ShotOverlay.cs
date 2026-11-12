@@ -421,6 +421,7 @@ public sealed class ShotOverlay
             case Key.C when ctrl: Output(Copy); break;
             case Key.S when ctrl: Output(Save); break;
             case Key.P when ctrl: Output(Print); break;
+            case Key.D when ctrl: Output(Upload); break;
             case Key.Z when ctrl: Undo(); break;
             case Key.Left or Key.Right or Key.Up or Key.Down when _sel is { } sel && _drag == Drag.None:
                 var step = ctrl ? 10 : 1;
@@ -534,6 +535,7 @@ public sealed class ShotOverlay
     private Border BuildActionsBar()
     {
         var stack = new StackPanel { Orientation = Orientation.Horizontal };
+        stack.Children.Add(Button(Ui.Icon("\uE898", 14), "Upload and copy a link (Ctrl+D)", () => Output(Upload)));
         stack.Children.Add(Button(Ui.Icon(Ui.GImage, 14), "Open in Paint", () => Output(OpenInPaint)));
         stack.Children.Add(Button(Ui.Icon("", 14), "Print (Ctrl+P)", () => Output(Print)));
         stack.Children.Add(Button(Ui.Icon(Ui.GCopy, 14), "Copy (Ctrl+C)", () => Output(Copy)));
@@ -678,6 +680,26 @@ public sealed class ShotOverlay
         if (printed) return true;
         foreach (var s in _screens) { s.Window.Show(); s.Window.Topmost = true; }
         return false;
+    }
+
+    /// Lightshot's upload: the image goes to ImgBB and its link lands on the clipboard. Without an
+    /// API key nothing is sent; the overlay offers to open Settings instead.
+    private bool Upload(BitmapSource image)
+    {
+        if (!_service.CanUpload)
+        {
+            var owner = _screens.FirstOrDefault(s => s.Controls.Children.Contains(_actionsBar))?.Window ?? _screens[0].Window;
+            var open = MessageBox.Show(owner,
+                "Share links upload the screenshot to ImgBB, which needs your own free API key.\n\nOpen Settings to add it? The key goes under Screenshots, in Share links.",
+                "PC Essentials", MessageBoxButton.OKCancel, MessageBoxImage.Information) == MessageBoxResult.OK;
+            if (!open) return false;
+            Close();
+            _service.OpenSettings();
+            return true;
+        }
+        Close();
+        _service.Upload(image);
+        return true;
     }
 
     private bool OpenInPaint(BitmapSource image)
